@@ -69,13 +69,13 @@ class TextEncoder(nn.Module):
         return cls(model, tokenizer)
 
     @classmethod
-    def from_remote(cls):
+    def from_remote(cls, repo_id: str = DEFAULT_REPO):
         model = DEFAULT_TEXT_ENCODER_CLASS.from_pretrained(
-            DEFAULT_REPO,
+            repo_id,
         )
 
         tokenizer = AutoTokenizer.from_pretrained(
-            DEFAULT_REPO,
+            repo_id,
         )
 
         return cls(model, tokenizer)
@@ -127,8 +127,6 @@ class TextEncoder(nn.Module):
             add_special_tokens=True,
             return_tensors="pt",
         )
-
-        print(text_inputs)
 
         # 3. Move input_ids to model device
         input_ids = text_inputs.input_ids.to(self.model.device)

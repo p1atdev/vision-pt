@@ -4,9 +4,10 @@ import math
 
 from src.modules.timestep.embedding import get_timestep_embedding
 from src.models.jit.denoiser import JiT
-from src.models.jit.config import JiT_B_16_Config
+from src.models.jit.config import JiT_B_16_Config, JiTConfig, ClassContextConfig
 from src.models.jit.text_encoder import TextEncoder
 from src.models.jit.class_encoder import ClassEncoder
+from src.models.jit.pipeline import JiTModel
 
 
 def test_timesteps():
@@ -196,3 +197,60 @@ def test_class_encoder_forward():
 
     assert embedding.shape == (2, 4, 256)
     assert attention_mask.shape == (2, 4)
+
+
+@torch.no_grad()
+def test_new_jit_pipeline():
+    config = JiTConfig(
+        denoiser=JiT_B_16_Config(
+            context_embed_dim=768,
+            hidden_size=768,
+            num_heads=12,
+            rope_axes_dims=[16, 24, 24],
+            rope_axes_lens=[256, 128, 128],
+            rope_zero_centered=[False, True, True],
+        ),
+        context_encoder=ClassContextConfig(
+            label2id_map_path="models/jit-animeface-labels.json"
+        ),
+    )
+
+    model = JiTModel.new_with_config(
+        config=config,
+    )
+
+    assert isinstance(model.denoiser, JiT)
+
+    batch_size = 2
+    height = 256
+    width = 256
+    in_channels = 3
+
+    image = torch.randn(
+        batch_size,
+        in_channels,
+        height,
+        width,
+    )
+
+    # uniform [0, 1)
+    timestep = torch.rand(batch_size)
+
+    class_prompts = [
+        "general 1girl solo looking_at_viewer",
+        "sensitive 2girls multiple_girls",
+    ]
+
+    embedding, attention_mask = model.class_encoder.encode_prompts(
+        prompts=class_prompts,
+        max_token_length=32,
+    )
+
+    output = model.denoiser(
+        image=image,
+        timestep=timestep,
+        context=embedding,
+        context_mask=attention_mask,
+    )
+
+    assert output.shape == image.shape

@@ -53,6 +53,7 @@ ContextType = Literal["class", "text"]
 
 
 class ClassContextConfig(BaseModel):
+    type: Literal["class"] = "class"
     label2id_map_path: str
 
     @property
@@ -64,6 +65,7 @@ class ClassContextConfig(BaseModel):
 
 
 class TextContextConfig(BaseModel):
+    type: Literal["text"] = "text"
     pretrained_model: str = "p1atdev/Qwen3-VL-2B-Instruct-Text-Only"
 
 

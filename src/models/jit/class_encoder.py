@@ -39,25 +39,24 @@ class ClassTokenizer:
 
     def tokenize(
         self,
-        class_names: PromptType,
+        prompts: PromptType,
         max_length: int = 32,
     ) -> ClassTokenizerOutput:
         # 1. Normalize class names
-        _class_names = self.normalize_prompts(class_names)
+        _prompts = self.normalize_prompts(prompts)
 
         # 2. Convert to IDs
         class_ids = []
         masks = []
-        for text in _class_names:
+        for text in _prompts:
             ids = []
 
             for label in text.split(self.splitter):
-                if id := self.label2id.get(label) is not None:
+                if (id := self.label2id.get(label.strip())) and (id is not None):
                     ids.append(id)
                     masks.append(1)
                 else:
                     warnings.warn(f"Label '{label}' not found in label2id mapping.")
-
             class_ids.append(ids)
 
         # 3. Pad to max_length
@@ -105,6 +104,9 @@ class ClassEncoder(nn.Module):
         )
 
         self.tokenizer = ClassTokenizer(label2id)
+
+    def initialize_weights(self):
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
 
     def encode_prompts(
         self,
