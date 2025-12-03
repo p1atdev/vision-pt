@@ -1,4 +1,5 @@
 import torch
+import json
 
 from typing import Literal
 from pydantic import BaseModel
@@ -7,12 +8,7 @@ from ...utils.dtype import str_to_dtype
 # from ...modules.attention import AttentionImplementation
 
 
-DenoiserType = Literal["class2image", "text2image"]
-
-
-class BaseDenoiserConfig(BaseModel):
-    type: DenoiserType
-
+class DenoiserConfig(BaseModel):
     patch_size: int = 16
     in_channels: int = 3
     out_channels: int = 3
@@ -34,19 +30,7 @@ class BaseDenoiserConfig(BaseModel):
     context_context_len: int = 32
 
 
-# class to image
-class C2IDenoiserConfig(BaseDenoiserConfig):
-    type: Literal["class2image"] = "class2image"
-
-
-class T2IDenoiserConfig(BaseDenoiserConfig):
-    type: Literal["text2image"] = "text2image"
-
-
-DenoiserConfig = C2IDenoiserConfig | T2IDenoiserConfig
-
-
-class JiT_B_16_Config(C2IDenoiserConfig):
+class JiT_B_16_Config(DenoiserConfig):
     patch_size: int = 16
 
     depth: int = 12
@@ -63,3 +47,35 @@ class JiT_B_16_Config(C2IDenoiserConfig):
         128,  # 2048x2048 image size
         128,
     ]
+
+
+ContextType = Literal["class", "text"]
+
+
+class ClassContextConfig(BaseModel):
+    label2id_map_path: str
+
+    @property
+    def label2id(self) -> dict[str, int]:
+        with open(self.label2id_map_path, "r") as f:
+            label2id = json.load(f)
+
+        return label2id
+
+
+class TextContextConfig(BaseModel):
+    pretrained_model: str = "p1atdev/Qwen3-VL-2B-Instruct-Text-Only"
+
+
+ContextConfig = ClassContextConfig | TextContextConfig
+
+
+class JiTConfig(BaseModel):
+    dtype: str = "float32"
+
+    context_encoder: ContextConfig
+    denoiser: DenoiserConfig = JiT_B_16_Config()
+
+    @property
+    def torch_dtype(self) -> torch.dtype:
+        return str_to_dtype(self.dtype)
