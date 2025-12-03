@@ -6,6 +6,7 @@ from src.modules.timestep.embedding import get_timestep_embedding
 from src.models.jit.denoiser import JiT
 from src.models.jit.config import T2IDenoiserConfig, T2I_B_16_Config
 from src.models.jit.text_encoder import TextEncoder
+from src.models.jit.class_encoder import ClassEncoder
 
 
 def test_timesteps():
@@ -167,3 +168,31 @@ def test_text_encoder_forward():
 
     assert output.positive_embeddings.shape[-1] == 2048
     assert output.negative_embeddings.shape[-1] == 2048
+
+
+@torch.no_grad()
+def test_class_encoder_forward():
+    label2id = {
+        "cat": 0,
+        "dog": 1,
+        "car": 2,
+        "tree": 3,
+    }
+
+    model = ClassEncoder(
+        label2id=label2id,
+        embedding_dim=256,
+    )
+
+    class_prompts = [
+        "cat dog",
+        "car tree dog",
+    ]
+
+    embedding, attention_mask = model.encode_prompts(
+        prompts=class_prompts,
+        max_token_length=4,
+    )
+
+    assert embedding.shape == (2, 4, 256)
+    assert attention_mask.shape == (2, 4)
