@@ -5,6 +5,7 @@ import math
 from src.modules.timestep.embedding import get_timestep_embedding
 from src.models.jit.denoiser import JiT
 from src.models.jit.config import T2IDenoiserConfig, T2I_B_16_Config
+from src.models.jit.text_encoder import TextEncoder
 
 
 def test_timesteps():
@@ -142,3 +143,27 @@ def test_denoiser_forward():
     )
 
     assert output.shape == image.shape
+
+
+@torch.no_grad()
+def test_text_encoder_forward():
+    model = TextEncoder.from_remote()
+
+    prompts = [
+        "A beautiful landscape painting of mountains during sunrise.",
+        "A futuristic cityscape with flying cars and neon lights.",
+    ]
+    negative_prompts = [
+        "low quality, blurry, distorted",
+        "dark, gloomy, night",
+    ]
+
+    output = model.encode_prompts(
+        prompts=prompts,
+        negative_prompts=negative_prompts,
+        use_negative_prompts=True,
+        max_token_length=128,
+    )
+
+    assert output.positive_embeddings.shape[-1] == 2048
+    assert output.negative_embeddings.shape[-1] == 2048
