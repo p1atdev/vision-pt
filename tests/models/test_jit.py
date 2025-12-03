@@ -4,7 +4,7 @@ import math
 
 from src.modules.timestep.embedding import get_timestep_embedding
 from src.models.jit.denoiser import JiT
-from src.models.jit.config import T2IDenoiserConfig, T2I_B_16_Config
+from src.models.jit.config import JiT_B_16_Config
 from src.models.jit.text_encoder import TextEncoder
 from src.models.jit.class_encoder import ClassEncoder
 
@@ -103,8 +103,8 @@ def test_position_ids():
 
 @torch.no_grad()
 def test_denoiser_forward():
-    config = T2I_B_16_Config(
-        text_embed_dim=768,
+    config = JiT_B_16_Config(
+        context_embed_dim=768,
         hidden_size=768,
         num_heads=12,
         rope_axes_dims=[16, 24, 24],
@@ -129,7 +129,7 @@ def test_denoiser_forward():
     timestep = torch.rand(batch_size)
 
     context_len = 128
-    context_dim = config.text_embed_dim
+    context_dim = config.context_embed_dim
 
     context = torch.randn(
         batch_size,

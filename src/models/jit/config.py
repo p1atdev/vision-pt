@@ -30,26 +30,23 @@ class BaseDenoiserConfig(BaseModel):
     rope_axes_lens: list[int] = [256, 128, 128]
     rope_zero_centered: list[bool] = [False, True, True]
 
+    context_embed_dim: int
+    context_context_len: int = 32
+
 
 # class to image
 class C2IDenoiserConfig(BaseDenoiserConfig):
     type: Literal["class2image"] = "class2image"
 
-    num_classes: int = 1000
-    in_context_len: int = 32
-
 
 class T2IDenoiserConfig(BaseDenoiserConfig):
     type: Literal["text2image"] = "text2image"
-
-    text_embed_dim: int
-    text_context_len: int = 64
 
 
 DenoiserConfig = C2IDenoiserConfig | T2IDenoiserConfig
 
 
-class C2I_B_16_Config(C2IDenoiserConfig):
+class JiT_B_16_Config(C2IDenoiserConfig):
     patch_size: int = 16
 
     depth: int = 12
@@ -57,19 +54,8 @@ class C2I_B_16_Config(C2IDenoiserConfig):
     num_heads: int = 12
     bottleneck_dim: int = 128
 
-    in_context_len: int = 32
-
-
-class T2I_B_16_Config(T2IDenoiserConfig):
-    patch_size: int = 16
-
-    depth: int = 12
-    hidden_size: int = 768
-    num_heads: int = 12
-    bottleneck_dim: int = 128
-
-    text_embed_dim: int
-    text_context_len: int = 128
+    context_embed_dim: int = 768
+    context_context_len: int = 32
 
     rope_axes_dims: list[int] = [16, 24, 24]  # sum = 64 = 768 / 12
     rope_axes_lens: list[int] = [

@@ -450,37 +450,35 @@ class JiT(nn.Module):
             config.rope_axes_dims
         )  # 0: image_index, 1: height, 2: width
 
-        self.patch_embed = BottleneckPatchEmbed(
+        # image patch embedder
+        self.patch_embedder = BottleneckPatchEmbed(
             patch_size=config.patch_size,
             in_channels=config.in_channels,
             bottleneck_dim=config.bottleneck_dim,
             hidden_dim=config.hidden_size,
             bias=True,
         )
-        self.time_embed = TimestepEmbedder(
+
+        # timestep embedder
+        self.time_embedder = TimestepEmbedder(
             hidden_dim=config.hidden_size,
             freq_embedding_size=256,
         )
 
-        self.rope_embed = RopeEmbedder(
+        # RoPE embedder
+        self.rope_embedder = RopeEmbedder(
             rope_theta=config.rope_theta,
             axes_dims=config.rope_axes_dims,
             axes_lens=config.rope_axes_lens,
             zero_centered=config.rope_zero_centered,
         )
 
-        if config.type == "class2image":
-            # TODO: label embedder
-            pass
-        elif config.type == "text2image":
-            self.text_embed = nn.Linear(
-                config.text_embed_dim,
-                config.hidden_size,
-                bias=True,
-            )
-
-        else:
-            raise ValueError(f"Unsupported denoiser type: {config.type}")
+        # class condition or text embedding
+        self.context_embedder = nn.Linear(
+            config.context_embed_dim,
+            config.hidden_size,
+            bias=True,
+        )
 
         self.blocks = nn.ModuleList(
             [
@@ -548,15 +546,15 @@ class JiT(nn.Module):
     def prepare_context_position_ids(
         self,
         seq_len: int,
-        text_index: int = 0,
+        context_index: int = 0,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
             self.num_axes,
         )
 
-        # text_index
-        position_ids[:, 0] = text_index  # text
+        # context_index
+        position_ids[:, 0] = context_index  # text
 
         # token indices are (0, 0)...(seq_len-1, seq_len-1)
         position_ids[:, 1] = torch.arange(seq_len)
@@ -639,19 +637,13 @@ class JiT(nn.Module):
     ):
         batch_size, _in_channels, height, width = image.shape
 
-        time_embed = self.time_embed(timestep)
-        context_embed = self.text_embed(context)
+        time_embed = self.time_embedder(timestep)
+        context_embed = self.context_embedder(context)
         context_len = context_embed.shape[1]
-
-        # if self.config.type == "class2image":
-        #     global_condition = time_embed + context_embed
-        # elif self.config.type == "text2image":
-        #     # mean with seq len
-        #     global_condition = time_embed + context_embed.mean(dim=1)
 
         global_condition = time_embed
 
-        patches = self.patch_embed(image)  # [B, N, hidden_dim]]
+        patches = self.patch_embedder(image)  # [B, N, hidden_dim]]
         patches_len = patches.shape[1]
 
         patches_position_ids = self.prepare_image_position_ids(
@@ -661,7 +653,7 @@ class JiT(nn.Module):
         )
         context_position_ids = self.prepare_context_position_ids(
             seq_len=context_len,
-            text_index=0,
+            context_index=0,
         )
         position_ids = torch.cat(
             [
@@ -672,7 +664,7 @@ class JiT(nn.Module):
         ).view(1, -1, self.num_axes)  # (1, total_seq_len, n_axes)
 
         # prepare RoPE
-        freqs_cis = self.rope_embed(position_ids=position_ids).repeat(
+        freqs_cis = self.rope_embedder(position_ids=position_ids).repeat(
             batch_size,
             1,
             1,
@@ -699,7 +691,6 @@ class JiT(nn.Module):
                 ],
                 dim=1,  # cat in seq_len dimension
             )
-            print(f"block {_i} tokens:", tokens.shape)
 
             patches = block(
                 tokens,
