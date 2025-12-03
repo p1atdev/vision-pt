@@ -605,12 +605,12 @@ class JiT(nn.Module):
                     nn.init.zeros_(m.bias)
 
         # patch embed
-        w_1 = self.patch_embed.proj_1.weight
+        w_1 = self.patch_embedder.proj_1.weight
         nn.init.xavier_uniform_(w_1.view([w_1.shape[0], -1]))
-        w_2 = self.patch_embed.proj_2.weight
+        w_2 = self.patch_embedder.proj_2.weight
         nn.init.xavier_uniform_(w_2.view([w_2.shape[0], -1]))
-        if self.patch_embed.proj_2.bias is not None:
-            nn.init.zeros_(self.patch_embed.proj_2.bias)
+        if self.patch_embedder.proj_2.bias is not None:
+            nn.init.zeros_(self.patch_embedder.proj_2.bias)
 
         # AdaLN zero init
         for block in self.blocks:
