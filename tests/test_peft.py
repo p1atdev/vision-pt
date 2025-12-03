@@ -13,12 +13,13 @@ from src.modules.peft import (
     get_adapter_parameters,
     PeftTargetConfig,
 )
-from src.models.auraflow import (
-    AuraFlowConig,
-    AuraFlowModel,
-    convert_to_original_key,
-    convert_to_comfy_key,
-)
+
+# from src.models.auraflow import (
+#     AuraFlowConig,
+#     AuraFlowModel,
+#     convert_to_original_key,
+#     convert_to_comfy_key,
+# )
 from src.utils.state_dict import RegexMatch
 
 
@@ -292,55 +293,55 @@ def test_replace_lora_linear_multiple_target():
     assert model.layer4.lora_up.bias.shape == torch.Size([10])
 
 
-def test_save_lora_weight():
-    with init_empty_weights():
-        model = AuraFlowModel(AuraFlowConig(checkpoint_path="meta"))
-    model.to_empty(device="cpu")
+# def test_save_lora_weight():
+#     with init_empty_weights():
+#         model = AuraFlowModel(AuraFlowConig(checkpoint_path="meta"))
+#     model.to_empty(device="cpu")
 
-    config = PeftTargetConfig(
-        config=LoRAConfig(
-            type="lora",
-            rank=4,
-            alpha=1.0,
-            dropout=0.0,
-            use_bias=False,
-            dtype="bfloat16",
-        ),
-        include_keys=[
-            ".attn.",
-            ".mlp.",
-            ".modC.",
-            ".modC.",
-            ".modX.",
-        ],  # Attention and FeedForward, AdaLayerNorm
-        exclude_keys=[
-            "text_encoder",
-            "vae",
-            "t_embedder",
-            "final_linear",
-        ],  # exclude text encoder, vae, time embedder, final linear
-    )
+#     config = PeftTargetConfig(
+#         config=LoRAConfig(
+#             type="lora",
+#             rank=4,
+#             alpha=1.0,
+#             dropout=0.0,
+#             use_bias=False,
+#             dtype="bfloat16",
+#         ),
+#         include_keys=[
+#             ".attn.",
+#             ".mlp.",
+#             ".modC.",
+#             ".modC.",
+#             ".modX.",
+#         ],  # Attention and FeedForward, AdaLayerNorm
+#         exclude_keys=[
+#             "text_encoder",
+#             "vae",
+#             "t_embedder",
+#             "final_linear",
+#         ],  # exclude text encoder, vae, time embedder, final linear
+#     )
 
-    config.replace_to_peft_layer(
-        model,
-    )
-    peft_state_dict = get_adapter_parameters(model)
+#     config.replace_to_peft_layer(
+#         model,
+#     )
+#     peft_state_dict = get_adapter_parameters(model)
 
-    assert all(key.startswith("denoiser.") for key in peft_state_dict.keys())
+#     assert all(key.startswith("denoiser.") for key in peft_state_dict.keys())
 
-    # lora with original key names
-    orig_state_dict = {
-        convert_to_original_key(key): value for key, value in peft_state_dict.items()
-    }
-    assert all(key.startswith("model.") for key in orig_state_dict.keys())
-    save_file(orig_state_dict, "output/lora_empty.safetensors")
+#     # lora with original key names
+#     orig_state_dict = {
+#         convert_to_original_key(key): value for key, value in peft_state_dict.items()
+#     }
+#     assert all(key.startswith("model.") for key in orig_state_dict.keys())
+#     save_file(orig_state_dict, "output/lora_empty.safetensors")
 
-    # comfyui compatible key anmes
-    comfy_state_dict = {
-        convert_to_comfy_key(key): value for key, value in peft_state_dict.items()
-    }
-    assert all(key.startswith("diffusion_model.") for key in comfy_state_dict.keys())
-    save_file(comfy_state_dict, "output/lora_empty.safetensors")
+#     # comfyui compatible key anmes
+#     comfy_state_dict = {
+#         convert_to_comfy_key(key): value for key, value in peft_state_dict.items()
+#     }
+#     assert all(key.startswith("diffusion_model.") for key in comfy_state_dict.keys())
+#     save_file(comfy_state_dict, "output/lora_empty.safetensors")
 
 
 @torch.no_grad()

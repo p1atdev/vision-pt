@@ -1,6 +1,5 @@
-# Vision model finetuning scripts
+# Vision model pretraining scripts
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/p1atdev/vision-ft)
 
 WIP
 
@@ -11,24 +10,10 @@ WIP
 - [Flash Attention](https://github.com/Dao-AILab/flash-attention) support
 - Aspect ratio bucketing
 
-### Models
 
-- [x] [SDXL](./src/models/sdxl)
-- [x] [AuraFlow](./src/models/auraflow)
-- [x] [Lumina Image 2.0](./src/models/lumina2)
-- [ ] Flux & Flex (WIP)
-- [ ] CogView4 (WIP)
-- [ ] FractalGen (TODO)
-- [ ] Wan 2.1 (TODO)
+## Models
 
-## Setup
-
-```bash
-uv sync --extra build
-uv sync --all-extras
-# uv sync --extra compile --extra flash-attn --extra xformers --extra triton
-# at least compile is required for training
-```
+- [ ] JiT
 
 
 ## References

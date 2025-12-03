@@ -1,11 +1,11 @@
 [project]
-name = "vision-ft"
+name = "vision-pt"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "torch>=2.5,<2.7",
+    "torch>=2.6,<2.8",
     "torchvision>=0.20",
     "safetensors>=0.4.5",
     "hf-transfer>=0.1.8",
@@ -45,7 +45,6 @@ dev-dependencies = [
     "litserve>=0.2.5",
     "gradio>=5.9.1",
     "seaborn>=0.13.2",
-    "comfyui",
     "ty>=0.0.1a7",
 ]
 no-build-isolation-package = ["flash-attn"]
@@ -60,9 +59,9 @@ requires-dist = ["setuptools", "wheel"]
 
 [project.optional-dependencies]
 build = ["setuptools", "wheel"]
-compile = ["schedulefree", "diffusers<=0.36.0"]
+compile = ["schedulefree", "diffusers"]
 flash-attn = ["flash-attn<2.8.0"]
-quanto = ["optimum-quanto"]                     # to avoid Zero GPU issues
+quanto = ["optimum-quanto"]             # to avoid Zero GPU issues
 triton = ["triton"]
 xformers = ["xformers"]
 
@@ -74,16 +73,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu124", marker = "platform_system != 'Darwin'" }]
+torch = [{ index = "pytorch-cu128", marker = "platform_system != 'Darwin'" }]
 torchvision = [
-    { index = "pytorch-cu124", marker = "platform_system != 'Darwin'" },
+    { index = "pytorch-cu128", marker = "platform_system != 'Darwin'" },
 ]
 huggingface-dl = { git = "https://github.com/p1atdev/huggingface_dl" }
-comfyui = { git = "https://github.com/p1atdev/ComfyUI", rev = "lib" }
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 
