@@ -271,10 +271,6 @@ class JiTModel(nn.Module):
         # 4. Denoising loop
         with self.progress_bar(total=num_inference_steps) as pbar:
             for i, timestep in enumerate(timesteps[:-1]):
-                print(
-                    "noisy_image:", noisy_image.mean().item(), noisy_image.std().item()
-                )
-
                 image_input = torch.cat([noisy_image] * 2) if do_cfg else noisy_image
 
                 batch_timestep = timestep.expand(image_input.shape[0])
@@ -285,8 +281,6 @@ class JiTModel(nn.Module):
                     context=prompt_embeddings,
                     context_mask=attention_mask,
                 )
-
-                print("model_pred:", model_pred.mean().item(), model_pred.std().item())
 
                 if do_cfg:
                     image_pred_positive, image_pred_negative = model_pred.chunk(2)
