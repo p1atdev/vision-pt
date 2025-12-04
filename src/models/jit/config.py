@@ -20,14 +20,14 @@ class DenoiserConfig(BaseModel):
     proj_dropout: float = 0.0
 
     bottleneck_dim: int = 128
+    num_time_tokens: int = 4
 
     rope_theta: float = 256.0
     rope_axes_dims: list[int] = [16, 24, 24]
     rope_axes_lens: list[int] = [256, 128, 128]
     rope_zero_centered: list[bool] = [False, True, True]
 
-    context_embed_dim: int
-    context_context_len: int = 32
+    context_dim: int
 
 
 class JiT_B_16_Config(DenoiserConfig):
@@ -38,8 +38,7 @@ class JiT_B_16_Config(DenoiserConfig):
     num_heads: int = 12
     bottleneck_dim: int = 128
 
-    context_embed_dim: int = 768
-    context_context_len: int = 32
+    context_dim: int = 768
 
     rope_axes_dims: list[int] = [16, 24, 24]  # sum = 64 = 768 / 12
     rope_axes_lens: list[int] = [

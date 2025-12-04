@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 
 import torch.nn.functional as F
 
@@ -10,11 +11,6 @@ from .config import DenoiserConfig
 from ...modules.norm import FP32RMSNorm
 from ...modules.attention import scaled_dot_product_attention
 from ...modules.timestep.embedding import get_timestep_embedding
-
-
-def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    # unsqueeze for seq_len dim
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -59,7 +55,13 @@ class BottleneckPatchEmbed(nn.Module):
         # -> [B, hidden_dim, H/patch_size, W/patch_size] (proj_2)
         # -> [B, hidden_dim, num_patches] (flatten)
         # -> [B, num_patches, hidden_dim] (transpose)
-        patches = self.proj_2(self.proj_1(image)).flatten(2).transpose(1, 2)
+        patches = (
+            self.proj_2(
+                self.proj_1(image),
+            )
+            .flatten(2)
+            .transpose(1, 2)
+        )
 
         return patches
 
@@ -87,7 +89,7 @@ class TimestepEmbedder(nn.Module):
             flip_sin_to_cos=True,
             downscale_freq_shift=0,
         )
-        time_embed = self.mlp(freq_emb)
+        time_embed = self.mlp(freq_emb.to(dtype=self.mlp[0].weight.dtype))
 
         return time_embed
 
@@ -214,8 +216,6 @@ class RopeEmbedder:
                     index=index,
                 )
             )
-
-        print("RopeEmbedder result:", [r.shape for r in result])
 
         return torch.cat(result, dim=-1)
 
@@ -347,6 +347,7 @@ class FinalLayer(nn.Module):
     def __init__(
         self,
         hidden_dim: int,
+        mlp_ratio: float,
         patch_size: int,
         out_channels: int,
     ):
@@ -354,23 +355,25 @@ class FinalLayer(nn.Module):
 
         self.norm_final = FP32RMSNorm(hidden_dim)
 
+        self.mlp = SwiGLU(
+            dim=hidden_dim,
+            hidden_dim=int(hidden_dim * mlp_ratio),
+            dropout=0.0,
+            bias=True,
+        )
+
         self.linear = nn.Linear(
             hidden_dim,
             patch_size * patch_size * out_channels,
             bias=True,
         )
 
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim * 2, bias=True),
-        )
-
     def forward(
-        self, hidden_states: torch.Tensor, condition: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        shift, scale = self.adaLN_modulation(condition).chunk(2, dim=-1)
-
-        x = modulate(self.norm_final(hidden_states), shift, scale)
+        x = self.norm_final(hidden_states)
+        x = self.mlp(x)
         x = self.linear(x)
 
         return x
@@ -409,33 +412,21 @@ class JiTBlock(nn.Module):
             bias=bias,
         )
 
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim * 6, bias=True),
-        )
-
     def forward(
         self,
         hidden_states: torch.Tensor,
-        condition: torch.Tensor,
         rope_freqs: torch.Tensor,
         mask: torch.Tensor | None = None,
     ):
-        shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = (
-            self.adaLN_modulation(condition).chunk(6, dim=-1)
-        )
-
         # attn
-        hidden_states = hidden_states + gate_attn.unsqueeze(1) * self.attn(
-            modulate(self.norm1(hidden_states), shift_attn, scale_attn),
+        hidden_states = hidden_states + self.attn(
+            self.norm1(hidden_states),
             rope_freqs,
             mask=mask,
         )
 
         # mlp
-        hidden_states = hidden_states + gate_mlp.unsqueeze(1) * self.mlp(
-            modulate(self.norm2(hidden_states), shift_mlp, scale_mlp)
-        )
+        hidden_states = hidden_states + self.mlp(self.norm2(hidden_states))
 
         return hidden_states
 
@@ -464,6 +455,13 @@ class JiT(nn.Module):
             hidden_dim=config.hidden_size,
             freq_embedding_size=256,
         )
+        self.time_position_embeds = nn.Parameter(
+            torch.randn(
+                config.num_time_tokens,
+                config.hidden_size,
+            ),
+            requires_grad=True,
+        )
 
         # RoPE embedder
         self.rope_embedder = RopeEmbedder(
@@ -475,7 +473,7 @@ class JiT(nn.Module):
 
         # class condition or text embedding
         self.context_embedder = nn.Linear(
-            config.context_embed_dim,
+            config.context_dim,
             config.hidden_size,
             bias=True,
         )
@@ -499,15 +497,55 @@ class JiT(nn.Module):
 
         self.final_layer = FinalLayer(
             hidden_dim=config.hidden_size,
+            mlp_ratio=config.mlp_ratio,
             patch_size=config.patch_size,
             out_channels=config.in_channels,
         )
+
+        self.gradient_checkpointing = False
+
+    def initialize_weights(self):
+        # Initialize weights
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.RMSNorm):
+                nn.init.ones_(m.weight)
+
+        # patch embed
+        w_1 = self.patch_embedder.proj_1.weight
+        nn.init.xavier_uniform_(w_1.view([w_1.shape[0], -1]))
+        w_2 = self.patch_embedder.proj_2.weight
+        nn.init.xavier_uniform_(w_2.view([w_2.shape[0], -1]))
+        if self.patch_embedder.proj_2.bias is not None:
+            nn.init.zeros_(self.patch_embedder.proj_2.bias)
+
+        # time position embeds
+        nn.init.normal_(
+            self.time_position_embeds,
+            std=0.02,
+        )
+
+        # time embedder
+        nn.init.normal_(
+            self.time_embedder.mlp[0].weight,  # type: ignore
+            std=0.02,
+        )
+        nn.init.normal_(
+            self.time_embedder.mlp[2].weight,  # type: ignore
+            std=0.02,
+        )
+
+    def set_gradient_checkpointing(self, enable: bool = True):
+        self.gradient_checkpointing = enable
 
     def prepare_image_position_ids(
         self,
         height: int,
         width: int,
-        image_index: int = 1,
+        image_index: int = 2,
     ) -> torch.Tensor:
         # [H/patch_size, W/patch_size]
 
@@ -546,7 +584,7 @@ class JiT(nn.Module):
     def prepare_context_position_ids(
         self,
         seq_len: int,
-        context_index: int = 0,
+        context_index: int = 1,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
@@ -555,6 +593,25 @@ class JiT(nn.Module):
 
         # context_index
         position_ids[:, 0] = context_index  # text
+
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
+
+        return position_ids
+
+    def prepare_time_position_ids(
+        self,
+        seq_len: int,
+        time_index: int = 0,
+    ) -> torch.Tensor:
+        position_ids = torch.zeros(
+            seq_len,
+            self.num_axes,
+        )
+
+        # time_index
+        position_ids[:, 0] = time_index  # time
 
         # token indices are (0, 0)...(seq_len-1, seq_len-1)
         position_ids[:, 1] = torch.arange(seq_len)
@@ -596,38 +653,6 @@ class JiT(nn.Module):
 
         return images
 
-    def initialize_weights(self):
-        # Initialize weights
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-        # patch embed
-        w_1 = self.patch_embedder.proj_1.weight
-        nn.init.xavier_uniform_(w_1.view([w_1.shape[0], -1]))
-        w_2 = self.patch_embedder.proj_2.weight
-        nn.init.xavier_uniform_(w_2.view([w_2.shape[0], -1]))
-        if self.patch_embedder.proj_2.bias is not None:
-            nn.init.zeros_(self.patch_embedder.proj_2.bias)
-
-        # AdaLN zero init
-        for block in self.blocks:
-            nn.init.zeros_(block.adaLN_modulation[-1].weight)  # type: ignore
-            nn.init.zeros_(block.adaLN_modulation[-1].bias)  # type: ignore
-
-        # final layer
-        if (adaLN := self.final_layer.adaLN_modulation[-1]) and (
-            isinstance(adaLN, nn.Linear)
-        ):
-            nn.init.zeros_(adaLN.weight)
-            nn.init.zeros_(adaLN.bias)
-        else:
-            raise ValueError("Final layer AdaLN modulation is not a Linear layer")
-        nn.init.zeros_(self.final_layer.linear.weight)
-        nn.init.zeros_(self.final_layer.linear.bias)
-
     def forward(
         self,
         image: torch.Tensor,  # [B, C, H, W]
@@ -637,11 +662,20 @@ class JiT(nn.Module):
     ):
         batch_size, _in_channels, height, width = image.shape
 
-        time_embed = self.time_embedder(timestep)
+        time_embed: torch.Tensor = self.time_embedder(timestep)
+        time_tokens = time_embed.unsqueeze(1).repeat(  # add seq_len dim
+            1,
+            self.time_position_embeds.shape[0],  # num_time_tokens
+            1,
+        ) + self.time_position_embeds.unsqueeze(0).repeat(  # add batch dim
+            batch_size,
+            1,
+            1,
+        )  # [B, num_time_tokens, hidden_dim]
+        num_time_tokens = time_tokens.shape[1]
+
         context_embed = self.context_embedder(context)
         context_len = context_embed.shape[1]
-
-        global_condition = time_embed
 
         patches = self.patch_embedder(image)  # [B, N, hidden_dim]]
         patches_len = patches.shape[1]
@@ -649,15 +683,20 @@ class JiT(nn.Module):
         patches_position_ids = self.prepare_image_position_ids(
             height=height,
             width=width,
-            image_index=1,
+            image_index=2,
         )
         context_position_ids = self.prepare_context_position_ids(
             seq_len=context_len,
-            context_index=0,
+            context_index=1,
+        )
+        time_position_ids = self.prepare_time_position_ids(
+            seq_len=num_time_tokens,
+            time_index=0,
         )
         position_ids = torch.cat(
             [
                 patches_position_ids,
+                time_position_ids,
                 context_position_ids,
             ],
             dim=0,
@@ -669,37 +708,52 @@ class JiT(nn.Module):
             1,
             1,
         )
-        # print("freqs_cis:", freqs_cis.shape, freqs_cis)
 
         # attention mask
         if context_mask is not None:
             patches_mask = torch.ones(batch_size, patches_len, device=image.device)
-            mask = torch.cat([patches_mask, context_mask.to(image.device)], dim=1)
+            time_mask = torch.ones(batch_size, num_time_tokens, device=image.device)
+            mask = torch.cat(
+                [
+                    patches_mask,
+                    time_mask,
+                    context_mask.to(image.device),
+                ],
+                dim=1,
+            )
         else:
             # attend all
             mask = torch.ones(
                 batch_size,
-                patches_len + context_len,
+                patches_len + num_time_tokens + context_len,
                 device=image.device,
             )
 
         for _i, block in enumerate(self.blocks):
             tokens = torch.cat(
                 [
-                    patches,
-                    context_embed,
+                    patches,  # 16x16
+                    time_tokens,  # 4
+                    context_embed,  # 64
                 ],
                 dim=1,  # cat in seq_len dimension
             )
 
-            patches = block(
-                tokens,
-                global_condition,
-                rope_freqs=freqs_cis,
-                mask=mask,
-            )[:, :patches_len, :]  # only keep patch tokens
+            if self.gradient_checkpointing and self.training:
+                patches = checkpoint.checkpoint(  # type: ignore
+                    block,
+                    tokens,
+                    freqs_cis,
+                    mask,
+                )[:, :patches_len, :]
+            else:
+                patches = block(
+                    tokens,
+                    rope_freqs=freqs_cis,
+                    mask=mask,
+                )[:, :patches_len, :]  # only keep patch tokens
 
-        patches = self.final_layer(patches, global_condition)
+        patches = self.final_layer(patches)
 
         pred_image = self.unpatchify(
             patches,

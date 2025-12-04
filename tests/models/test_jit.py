@@ -105,7 +105,7 @@ def test_position_ids():
 @torch.no_grad()
 def test_denoiser_forward():
     config = JiT_B_16_Config(
-        context_embed_dim=768,
+        context_dim=768,
         hidden_size=768,
         num_heads=12,
         rope_axes_dims=[16, 24, 24],
@@ -130,7 +130,7 @@ def test_denoiser_forward():
     timestep = torch.rand(batch_size)
 
     context_len = 128
-    context_dim = config.context_embed_dim
+    context_dim = config.context_dim
 
     context = torch.randn(
         batch_size,
@@ -203,7 +203,7 @@ def test_class_encoder_forward():
 def test_new_jit_pipeline():
     config = JiTConfig(
         denoiser=JiT_B_16_Config(
-            context_embed_dim=768,
+            context_dim=768,
             hidden_size=768,
             num_heads=12,
             rope_axes_dims=[16, 24, 24],
@@ -254,3 +254,19 @@ def test_new_jit_pipeline():
     )
 
     assert output.shape == image.shape
+
+    # generate image
+    model.to(device="cpu", dtype=torch.float32)
+
+    pil_images = model.generate(
+        prompt="general 1girl solo looking_at_viewer",
+        num_inference_steps=20,
+        height=256,
+        width=256,
+        seed=42,
+        cfg_scale=2.0,
+        device=torch.device("cpu"),
+        execution_dtype=torch.float32,
+    )
+
+    pil_images[0].save("output/test_jit_pipeline_output.webp")
