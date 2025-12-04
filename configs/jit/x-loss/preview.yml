@@ -1,0 +1,23 @@
+- prompt: |-
+    general 1girl aqua_eyes baseball_cap blonde_hair closed_mouth earrings 
+    green_background hat hoop_earrings jewelry looking_at_viewer 
+    shirt short_hair simple_background solo upper_body yellow_shirt
+  negative_prompt:
+  height: 256
+  width: 256
+  cfg_scale: 1.5
+  num_steps: 20
+
+  seed: 0
+
+- prompt: |-
+    general 1girl aqua_eyes baseball_cap blonde_hair closed_mouth earrings 
+    green_background hat hoop_earrings jewelry looking_at_viewer 
+    shirt short_hair simple_background solo upper_body yellow_shirt
+  negative_prompt:
+  height: 256
+  width: 256
+  cfg_scale: 2
+  num_steps: 20
+
+  seed: 0
