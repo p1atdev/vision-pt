@@ -6,7 +6,7 @@ model:
   denoiser:
     context_dim: 768
     hidden_size: 768
-    num_heads: 2
+    num_heads: 12
     rope_axes_dims: [16, 24, 24]
     rope_axes_lens: [256, 128, 128]
     rope_zero_centered: [False, True, True]
@@ -55,6 +55,7 @@ model:
 #   #   exclude_keys: ["text_encoder", "vae"]
 
 dataset:
+  supported_extensions: [".webp"]
   folder: "../anime-face-dev/data/animeface-20s-1.8M"
   tags_folder: "../anime-face-dev/data/tags"
   metadata_extension: ".tags.json"

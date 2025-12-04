@@ -277,12 +277,14 @@ class Attention(nn.Module):
         rope_freqs: torch.Tensor,
         mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
     ) -> torch.Tensor:
+        batch_size, seq_len, _dim = hidden_states.shape
+
         # QKV
         q = self.to_q(hidden_states)
         k = self.to_k(hidden_states)
         v = self.to_v(hidden_states)
 
-        q = self._pre_attn_reshape(q)
+        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
         k = self._pre_attn_reshape(k)
         v = self._pre_attn_reshape(v)
 
@@ -294,8 +296,12 @@ class Attention(nn.Module):
         k = apply_rope(k, rope_freqs)
 
         if mask is not None:
-            # mask: (batch_size, seq_len) -> (batch_size, 1, seq_len, 1)
-            mask = mask.unsqueeze(1).unsqueeze(-1).bool()
+            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
+            mask = (
+                mask.bool()
+                .view(batch_size, 1, 1, seq_len)
+                .expand(-1, self.num_heads, seq_len, -1)
+            )
 
         attn = scaled_dot_product_attention(
             q,
@@ -436,6 +442,10 @@ class JiT(nn.Module):
         super().__init__()
 
         self.config = config
+
+        assert (config.hidden_size // config.num_heads) == sum(config.rope_axes_dims), (
+            "The sum of rope_axes_dims must equal to hidden_size / num_heads = head_dim."
+        )
 
         self.num_axes = len(
             config.rope_axes_dims
@@ -656,13 +666,13 @@ class JiT(nn.Module):
     def forward(
         self,
         image: torch.Tensor,  # [B, C, H, W]
-        timestep: torch.Tensor,
-        context: torch.Tensor,
-        context_mask: torch.Tensor | None = None,
+        timestep: torch.Tensor,  # [B]
+        context: torch.Tensor,  # [B, context_len, context_dim]
+        context_mask: torch.Tensor | None = None,  # [B, context_len]
     ):
         batch_size, _in_channels, height, width = image.shape
 
-        time_embed: torch.Tensor = self.time_embedder(timestep)
+        time_embed: torch.Tensor = self.time_embedder(timestep)  # [B, hidden_dim]
         time_tokens = time_embed.unsqueeze(1).repeat(  # add seq_len dim
             1,
             self.time_position_embeds.shape[0],  # num_time_tokens
@@ -703,10 +713,14 @@ class JiT(nn.Module):
         ).view(1, -1, self.num_axes)  # (1, total_seq_len, n_axes)
 
         # prepare RoPE
-        freqs_cis = self.rope_embedder(position_ids=position_ids).repeat(
-            batch_size,
-            1,
-            1,
+        freqs_cis = (
+            self.rope_embedder(position_ids=position_ids)
+            .repeat(
+                batch_size,
+                1,
+                1,
+            )
+            .to(device=image.device)
         )
 
         # attention mask
