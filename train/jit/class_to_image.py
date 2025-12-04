@@ -1,6 +1,7 @@
 from PIL.Image import Image
 import click
 from contextlib import nullcontext
+import random
 
 import torch
 import torch.nn as nn
@@ -32,6 +33,8 @@ class JiTConfigForTraining(JiTConfig):
     timestep_sampling: TimestepSamplingType = "scale_shift_sigmoid"  # "uniform"
 
     train_class_encoder: bool = True
+
+    drop_context_rate: float = 0.1  # for classifier-free guidance
 
     @property
     def is_from_scratch(self) -> bool:
@@ -147,6 +150,11 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
                 )
         else:
             raise ValueError("No encoder found in the model.")
+
+        if random.random() < self.model_config.drop_context_rate:
+            # for classifier-free guidance
+            context = torch.zeros_like(context)
+            attention_mask = torch.ones_like(attention_mask)  # do all attention
 
         timesteps = sample_timestep(
             latents_shape=images.shape,
