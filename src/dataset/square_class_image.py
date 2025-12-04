@@ -2,8 +2,8 @@ import json
 import os
 from tqdm import tqdm
 from pathlib import Path
+import random
 
-# import imagesize
 from PIL import Image
 from functools import reduce
 from typing import Sequence, Iterator
@@ -31,7 +31,10 @@ class SquareClassImagePair(ImageCaptionPair):
             character: list[str] = metadata.get("character_tags", {}).keys()
             general: list[str] = metadata.get("general_tags", {}).keys()
 
-            caption = " ".join([rating, *character, *general])
+            tags = [rating, *character, *general]
+            random.shuffle(tags)
+
+            caption = " ".join(tags)
 
             return caption
         else:
@@ -103,7 +106,7 @@ class SquareClassImageBucket(TextToImageBucket):
 
         return batch
 
-    def _generate_ds_from_pairs(self, pairs: list[ImageCaptionPair]) -> Iterator:
+    def _generate_ds_from_pairs(self, pairs: list[SquareClassImagePair]) -> Iterator:
         for pair in pairs:
             image = str(pair.image)
             caption = pair.read_caption()
