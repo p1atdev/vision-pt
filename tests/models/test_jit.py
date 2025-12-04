@@ -198,6 +198,8 @@ def test_class_encoder_forward():
     assert embedding.shape == (2, 4, 256)
     assert attention_mask.shape == (2, 4)
 
+    print(model.tokenizer.label2id)
+
 
 @torch.no_grad()
 def test_new_jit_pipeline():

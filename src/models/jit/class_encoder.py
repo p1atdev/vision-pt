@@ -52,7 +52,8 @@ class ClassTokenizer:
             ids = []
 
             for label in text.split(self.splitter):
-                if (id := self.label2id.get(label.strip())) and (id is not None):
+                id = self.label2id.get(label.strip())
+                if id is not None:  # 0 is OK
                     ids.append(id)
                     masks.append(1)
                 else:
