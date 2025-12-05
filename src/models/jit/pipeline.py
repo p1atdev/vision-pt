@@ -225,7 +225,7 @@ class JiTModel(nn.Module):
         timestep: torch.Tensor,
         clamp_eps: float = 1e-5,
     ):
-        return (image - noisy) / (1 - timestep).clamp_min_(clamp_eps)
+        return (image - noisy) / (1 - timestep.view(-1, 1, 1, 1)).clamp_min_(clamp_eps)
 
     @torch.inference_mode()
     def generate(
