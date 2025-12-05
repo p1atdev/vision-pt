@@ -129,6 +129,11 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
         caption = batch["caption"]
         dtype = self.model_config.torch_dtype
 
+        drop_context = random.random() < self.model_config.drop_context_rate
+
+        if drop_context:
+            caption = [""] * len(caption)
+
         # 1. Prepare the inputs
         if text_encoder := self.model.text_encoder:
             with torch.no_grad():
@@ -148,13 +153,10 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
                     caption,
                     max_token_length=self.model_config.max_token_length,
                 )
+            if drop_context:
+                attention_mask = torch.ones_like(attention_mask)
         else:
             raise ValueError("No encoder found in the model.")
-
-        if random.random() < self.model_config.drop_context_rate:
-            # for classifier-free guidance
-            context = torch.zeros_like(context)
-            attention_mask = torch.ones_like(attention_mask)  # do all attention
 
         timesteps = sample_timestep(
             latents_shape=images.shape,
