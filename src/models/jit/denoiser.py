@@ -555,7 +555,7 @@ class JiT(nn.Module):
         self,
         height: int,
         width: int,
-        image_index: int = 2,
+        image_index: int,
     ) -> torch.Tensor:
         # [H/patch_size, W/patch_size]
 
@@ -594,26 +594,31 @@ class JiT(nn.Module):
     def prepare_context_position_ids(
         self,
         seq_len: int,
-        context_index: int = 1,
+        context_start_index: int = 0,
+        xy_position: int = 0,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
             self.num_axes,
         )
 
-        # context_index
-        position_ids[:, 0] = context_index  # text
+        # context_index (0, ..., seq_len-1)
+        position_ids[:, 0] = torch.arange(
+            context_start_index,
+            context_start_index + seq_len,
+        )  # text
 
-        # token indices are (0, 0)...(seq_len-1, seq_len-1)
-        position_ids[:, 1] = torch.arange(seq_len)
-        position_ids[:, 2] = torch.arange(seq_len)
+        # token indices are (0, 0)...(0, 0)
+        position_ids[:, 1] = xy_position
+        position_ids[:, 2] = xy_position
 
         return position_ids
 
     def prepare_time_position_ids(
         self,
         seq_len: int,
-        time_index: int = 0,
+        time_start_index: int,
+        xy_position: int = 0,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
@@ -621,11 +626,13 @@ class JiT(nn.Module):
         )
 
         # time_index
-        position_ids[:, 0] = time_index  # time
+        position_ids[:, 0] = torch.arange(
+            time_start_index, time_start_index + seq_len
+        )  # time
 
-        # token indices are (0, 0)...(seq_len-1, seq_len-1)
-        position_ids[:, 1] = torch.arange(seq_len)
-        position_ids[:, 2] = torch.arange(seq_len)
+        # token indices are (0, 0)...(0, 0)
+        position_ids[:, 1] = xy_position
+        position_ids[:, 2] = xy_position
 
         return position_ids
 
@@ -690,19 +697,22 @@ class JiT(nn.Module):
         patches = self.patch_embedder(image)  # [B, N, hidden_dim]]
         patches_len = patches.shape[1]
 
-        patches_position_ids = self.prepare_image_position_ids(
-            height=height,
-            width=width,
-            image_index=2,
-        )
+        # context -> time -> patches
         context_position_ids = self.prepare_context_position_ids(
             seq_len=context_len,
-            context_index=1,
+            context_start_index=0,
         )
         time_position_ids = self.prepare_time_position_ids(
             seq_len=num_time_tokens,
-            time_index=0,
+            time_start_index=context_len,
         )
+        patches_position_ids = self.prepare_image_position_ids(
+            height=height,
+            width=width,
+            image_index=context_len + num_time_tokens,  # after context and time tokens
+        )
+
+        # actually: patches -> time -> context
         position_ids = torch.cat(
             [
                 patches_position_ids,
