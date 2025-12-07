@@ -52,6 +52,8 @@ class ClassTokenizer:
             ids = []
 
             for label in text.split(self.splitter):
+                if label.strip() == "":
+                    continue
                 id = self.label2id.get(label.strip())
                 if id is not None:  # 0 is OK
                     ids.append(id)
