@@ -20,7 +20,7 @@ class BottleneckPatchEmbed(nn.Module):
         self,
         patch_size: int = 16,
         in_channels: int = 3,
-        bottleneck_dim: int = 768,
+        bottleneck_dim: int = 128,
         hidden_dim: int = 768,
         bias: bool = True,
     ):
