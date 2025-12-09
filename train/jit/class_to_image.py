@@ -20,6 +20,7 @@ from src.modules.loss.flow_match import (
 from src.modules.timestep import sample_timestep, TimestepSamplingType
 from src.modules.peft import get_adapter_parameters
 from src.utils.logging import wandb_image
+from src.utils.grid import images_to_grid_image
 
 
 class JiTConfigForTraining(JiTConfig):
@@ -202,33 +203,42 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     @torch.inference_mode()
     def preview_step(self, batch, preview_index: int) -> list[Image]:
         prompt: str = batch["prompt"]
-        # negative_prompt: str | None = batch["negative_prompt"]
+        negative_prompt: str | None = batch.get("negative_prompt")
         height: int = batch["height"]
         width: int = batch["width"]
         cfg_scale: float = batch["cfg_scale"]
         num_steps: int = batch["num_steps"]
-        seed: int = batch["seed"]
+        seed: int = batch.get("seed", 0)
+        batch_size: int = batch.get("extra", {}).get("batch_size", 1)
+
+        self.accelerator.print(f"batch_size: {batch_size}, prompt: {prompt}")
 
         with self.accelerator.autocast():
-            image = self.model.generate(
-                prompt=prompt,
-                # negative_prompt=negative_prompt,
+            images = self.model.generate(
+                prompt=[prompt] * batch_size,
+                negative_prompt=negative_prompt,
                 height=height,
                 width=width,
                 num_inference_steps=num_steps,
                 cfg_scale=cfg_scale,
                 max_token_length=self.model_config.max_token_length,
                 seed=seed,
-            )[0]
+            )
+
+        # 画像を繋ぎ合わせる
+        grid_image = images_to_grid_image(
+            images,
+            padding=4,
+        )
 
         self.log(
             f"preview/image_{preview_index}",
-            wandb_image(image, caption=prompt),
+            wandb_image(grid_image, caption=prompt),
             on_step=True,
             on_epoch=False,
         )
 
-        return [image]
+        return [grid_image]
 
     def after_setup_model(self):
         if self.accelerator.is_main_process:
