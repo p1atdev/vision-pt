@@ -72,6 +72,8 @@ ContextConfig = ClassContextConfig | TextContextConfig
 
 
 class JiTConfig(BaseModel):
+    checkpoint_path: str | None = None
+
     dtype: str = "float32"
 
     context_encoder: ContextConfig
