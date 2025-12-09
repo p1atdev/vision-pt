@@ -23,8 +23,6 @@ from src.utils.logging import wandb_image
 
 
 class JiTConfigForTraining(JiTConfig):
-    checkpoint_path: str | None = None
-
     max_token_length: int = 64
     noise_scale: float = 1.0
     timestep_eps: float = 0.05
@@ -58,6 +56,8 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
                     checkpoint,
                 )
                 self.model.to(dtype=self.model_config.torch_dtype)
+            else:
+                raise ValueError("checkpoint_path is None, cannot load model.")
 
     def sanity_check(self):
         batch_size = 2
