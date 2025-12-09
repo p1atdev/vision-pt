@@ -89,12 +89,15 @@ class JiTModel(nn.Module):
     def from_pretrained(
         cls,
         config: JiTConfig,
-        checkpoint_path: str,
+        checkpoint_path: str | None = None,
     ) -> "JiTModel":
         with init_empty_weights():
             model = cls(config)
 
-        model._load_checkpoint(checkpoint_path)
+        assert config.checkpoint_path is not None or checkpoint_path is not None, (
+            "Either config.checkpoint_path or checkpoint_path must be provided."
+        )
+        model._load_checkpoint(checkpoint_path or config.checkpoint_path)  # type: ignore
 
         return model
 
@@ -227,6 +230,42 @@ class JiTModel(nn.Module):
     ):
         return (image - noisy) / (1 - timestep.view(-1, 1, 1, 1)).clamp_min_(clamp_eps)
 
+    def renorm_cfg(
+        self,
+        positive_velocity: torch.Tensor,
+        cfg_velocity: torch.Tensor,
+    ) -> torch.Tensor:
+        positive_norm = torch.norm(positive_velocity, dim=-1, keepdim=True)
+        cfg_norm = torch.norm(cfg_velocity, dim=-1, keepdim=True)
+
+        new_cfg_velocity = cfg_velocity * (positive_norm / cfg_norm)
+
+        return new_cfg_velocity
+
+    def dynamic_thresholding(
+        self,
+        images: torch.Tensor,
+        percentile: float = 0.995,
+    ) -> torch.Tensor:
+        """
+        Apply dynamic thresholding to the images.
+        Args:
+            images (torch.Tensor): The input images tensor.
+            percentile (float): The percentile value for thresholding.
+        Returns:
+            torch.Tensor: The thresholded images tensor.
+        """
+        batch_size = images.shape[0]
+        flattened_images = images.view(batch_size, -1)
+        abs_images = torch.abs(flattened_images)
+
+        s = torch.quantile(abs_images, percentile, dim=1, keepdim=True)
+        s = torch.clamp(s, min=1.0).view(batch_size, 1, 1, 1)
+
+        thresholded_images = torch.clamp(images, -s, s) / s
+
+        return thresholded_images
+
     @torch.inference_mode()
     def generate(
         self,
@@ -239,6 +278,8 @@ class JiTModel(nn.Module):
         seed: int | None = None,
         execution_dtype: torch.dtype = torch.bfloat16,
         device: torch.device | str = torch.device("cuda"),
+        do_cfg_renorm: bool = False,
+        do_dynamic_thresholding: bool = False,
         # do_offloading: bool = False,
     ):
         # 1. Prepare args
@@ -297,6 +338,20 @@ class JiTModel(nn.Module):
                     velocity = v_pred_positive + cfg_scale * (
                         v_pred_positive - v_pred_negative
                     )
+                    if do_cfg_renorm:
+                        velocity = self.renorm_cfg(
+                            positive_velocity=v_pred_positive,
+                            cfg_velocity=velocity,
+                        )
+                    if do_dynamic_thresholding:
+                        # re-calculate the image prediction after cfg
+                        image_pred = noisy_image + velocity * (1 - timestep)
+                        image_pred = self.dynamic_thresholding(image_pred)
+                        velocity = self.image_to_velocity(
+                            image=image_pred,
+                            noisy=noisy_image,
+                            timestep=timestep.expand(batch_size),
+                        )
                 else:
                     velocity = self.image_to_velocity(
                         image=model_pred,
