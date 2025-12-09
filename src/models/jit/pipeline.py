@@ -166,13 +166,14 @@ class JiTModel(nn.Module):
     def prepare_context_embeddings(
         self,
         prompts: str | list[str],
+        negative_prompt: str | list[str],
         max_token_length: int = 64,
         do_cfg: bool = False,
     ):
         if self.text_encoder is not None:
             encoder_output = self.text_encoder.encode_prompts(
                 prompts,
-                negative_prompts="",
+                negative_prompts=negative_prompt,
                 use_negative_prompts=do_cfg,
                 max_token_length=max_token_length,
             )
@@ -198,11 +199,15 @@ class JiTModel(nn.Module):
                 prompts,
                 max_token_length=max_token_length,
             )
+            negative_embeddings, _ = self.class_encoder.encode_prompts(
+                negative_prompt,
+                max_token_length=max_token_length,
+            )
             if do_cfg:
                 prompt_embeddings = torch.cat(
                     [
                         embeddings,
-                        torch.zeros_like(embeddings),
+                        negative_embeddings,
                     ],
                     dim=0,
                 )
@@ -266,10 +271,17 @@ class JiTModel(nn.Module):
 
         return thresholded_images
 
+    def normalize_prompts(
+        self,
+        prompt: str | list[str],
+    ) -> list[str]:
+        return prompt if isinstance(prompt, list) else [prompt]
+
     @torch.inference_mode()
     def generate(
         self,
         prompt: str | list[str],
+        negative_prompt: str | list[str] | None = None,
         width: int = 256,
         height: int = 256,
         num_inference_steps: int = 20,
@@ -280,6 +292,7 @@ class JiTModel(nn.Module):
         device: torch.device | str = torch.device("cuda"),
         do_cfg_renorm: bool = False,
         do_dynamic_thresholding: bool = False,
+        cfg_time_range: list[float] = [0.0, 1.0],
         # do_offloading: bool = False,
     ):
         # 1. Prepare args
@@ -303,8 +316,14 @@ class JiTModel(nn.Module):
             seed=seed,
         )
 
+        negative_prompts = [""] if negative_prompt is None else negative_prompt
+        negative_prompts = self.normalize_prompts(negative_prompts)
+        if len(negative_prompts) != batch_size and len(negative_prompts) == 1:
+            negative_prompts = negative_prompts * batch_size
+
         prompt_embeddings, attention_mask = self.prepare_context_embeddings(
             prompts=prompt,
+            negative_prompt=negative_prompts,
             max_token_length=max_token_length,
             do_cfg=do_cfg,
         )
@@ -323,7 +342,7 @@ class JiTModel(nn.Module):
                     context_mask=attention_mask,
                 )
 
-                if do_cfg:
+                if do_cfg and cfg_time_range[0] <= float(timestep) <= cfg_time_range[1]:
                     image_pred_positive, image_pred_negative = model_pred.chunk(2)
                     v_pred_positive = self.image_to_velocity(
                         image=image_pred_positive,
@@ -354,7 +373,7 @@ class JiTModel(nn.Module):
                         )
                 else:
                     velocity = self.image_to_velocity(
-                        image=model_pred,
+                        image=model_pred[:batch_size],
                         noisy=noisy_image,
                         timestep=timestep.expand(batch_size),
                     )
