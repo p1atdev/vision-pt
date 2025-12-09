@@ -51,6 +51,7 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
                 self.model = JiTModel.new_with_config(self.model_config)
                 self.model.to(dtype=self.model_config.torch_dtype)
             elif checkpoint := self.model_config.checkpoint_path:
+                self.accelerator.print(f"Loading model from checkpoint: {checkpoint}")
                 self.model = JiTModel.from_pretrained(
                     self.model_config,
                     checkpoint,
