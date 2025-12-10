@@ -13,7 +13,6 @@ from .class_encoder import ClassEncoder
 from .config import JiTConfig, ClassContextConfig, TextContextConfig
 
 from ...modules.quant import replace_by_prequantized_weights
-from ...modules.timestep.scheduler import get_linear_schedule
 from ...utils import tensor as tensor_utils
 
 
@@ -294,7 +293,7 @@ class JiTModel(nn.Module):
     ):
         # 1. Prepare args
         execution_device: torch.device = (
-            torch.device("cuda") if isinstance(device, str) else device
+            torch.device(device) if isinstance(device, str) else device
         )
         do_cfg = cfg_scale > 1.0
         timesteps = self.prepare_timesteps(
