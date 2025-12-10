@@ -89,15 +89,12 @@ class JiTModel(nn.Module):
     def from_pretrained(
         cls,
         config: JiTConfig,
-        checkpoint_path: str | None = None,
+        checkpoint_path: str,
     ) -> "JiTModel":
         with init_empty_weights():
             model = cls(config)
 
-        assert config.checkpoint_path is not None or checkpoint_path is not None, (
-            "Either config.checkpoint_path or checkpoint_path must be provided."
-        )
-        model._load_checkpoint(checkpoint_path or config.checkpoint_path)  # type: ignore
+        model._load_checkpoint(checkpoint_path)
 
         return model
 

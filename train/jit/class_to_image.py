@@ -24,6 +24,8 @@ from src.utils.grid import images_to_grid_image
 
 
 class JiTConfigForTraining(JiTConfig):
+    checkpoint_path: str | None = None
+
     max_token_length: int = 64
     noise_scale: float = 1.0
     timestep_eps: float = 0.05
