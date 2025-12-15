@@ -339,20 +339,35 @@ class JiTModel(nn.Module):
                 )
 
                 if do_cfg and cfg_time_range[0] <= float(timestep) <= cfg_time_range[1]:
-                    image_pred_positive, image_pred_negative = model_pred.chunk(2)
-                    v_pred_positive = self.image_to_velocity(
-                        image=image_pred_positive,
-                        noisy=noisy_image,
-                        timestep=timestep.expand(batch_size),
-                    )
-                    v_pred_negative = self.image_to_velocity(
-                        image=image_pred_negative,
-                        noisy=noisy_image,
-                        timestep=timestep.expand(batch_size),
-                    )
-                    velocity = v_pred_positive + cfg_scale * (
-                        v_pred_positive - v_pred_negative
-                    )
+                    if self.config.model_pred == "image":
+                        image_pred_positive, image_pred_negative = model_pred.chunk(2)
+                        v_pred_positive = self.image_to_velocity(
+                            image=image_pred_positive,
+                            noisy=noisy_image,
+                            timestep=timestep.expand(batch_size),
+                        )
+                        v_pred_negative = self.image_to_velocity(
+                            image=image_pred_negative,
+                            noisy=noisy_image,
+                            timestep=timestep.expand(batch_size),
+                        )
+                        velocity = v_pred_positive + cfg_scale * (
+                            v_pred_positive - v_pred_negative
+                        )
+                    elif self.config.model_pred == "velocity":
+                        v_pred_positive, v_pred_negative = model_pred.chunk(2)
+                        velocity = v_pred_positive + cfg_scale * (
+                            v_pred_positive - v_pred_negative
+                        )
+                    elif self.config.model_pred == "noise":
+                        raise NotImplementedError(
+                            "CFG with noise prediction is not implemented yet."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unknown model_pred: {self.config.model_pred}"
+                        )
+
                     if do_cfg_renorm:
                         velocity = self.renorm_cfg(
                             positive_velocity=v_pred_positive,
@@ -368,11 +383,22 @@ class JiTModel(nn.Module):
                             timestep=timestep.expand(batch_size),
                         )
                 else:
-                    velocity = self.image_to_velocity(
-                        image=model_pred[:batch_size],
-                        noisy=noisy_image,
-                        timestep=timestep.expand(batch_size),
-                    )
+                    if self.config.model_pred == "image":
+                        velocity = self.image_to_velocity(
+                            image=model_pred[:batch_size],
+                            noisy=noisy_image,
+                            timestep=timestep.expand(batch_size),
+                        )
+                    elif self.config.model_pred == "velocity":
+                        velocity = model_pred[:batch_size]
+                    elif self.config.model_pred == "noise":
+                        raise NotImplementedError(
+                            "Noise prediction is not implemented yet."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unknown model_pred: {self.config.model_pred}"
+                        )
 
                 # new noisy image
                 noisy_image = noisy_image + velocity * (timesteps[i + 1] - timestep)

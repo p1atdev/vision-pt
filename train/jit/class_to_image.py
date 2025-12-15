@@ -94,39 +94,61 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
 
     def treat_loss(
         self,
-        image_pred: torch.Tensor,
+        model_pred: torch.Tensor,
         noisy_image: torch.Tensor,
         clean_image: torch.Tensor,
         timesteps: torch.Tensor,
     ):
-        if self.model_config.loss_target == "velocity":
-            target_v = self.model.image_to_velocity(
-                image=clean_image,  # ground truth image
-                noisy=noisy_image,
-                timestep=timesteps,
-                clamp_eps=self.model_config.timestep_eps,
-            )
-            pred_v = self.model.image_to_velocity(
-                image=image_pred,
-                noisy=noisy_image,
-                timestep=timesteps,
-                clamp_eps=self.model_config.timestep_eps,
-            )
-            return F.mse_loss(
-                pred_v,
-                target_v,
-                reduction="mean",
-            )
+        if self.model_config.model_pred == "image":
+            image_pred = model_pred
+            if self.model_config.loss_target == "velocity":
+                target_v = self.model.image_to_velocity(
+                    image=clean_image,  # ground truth image
+                    noisy=noisy_image,
+                    timestep=timesteps,
+                    clamp_eps=self.model_config.timestep_eps,
+                )
+                pred_v = self.model.image_to_velocity(
+                    image=image_pred,
+                    noisy=noisy_image,
+                    timestep=timesteps,
+                    clamp_eps=self.model_config.timestep_eps,
+                )
+                return F.mse_loss(
+                    pred_v,
+                    target_v,
+                    reduction="mean",
+                )
 
-        elif self.model_config.loss_target == "image":
-            return F.mse_loss(
-                image_pred,
-                clean_image,
-                reduction="mean",
-            )
+            elif self.model_config.loss_target == "image":
+                return F.mse_loss(
+                    image_pred,
+                    clean_image,
+                    reduction="mean",
+                )
 
+            else:
+                raise ValueError(
+                    f"Unknown loss target: {self.model_config.loss_target}"
+                )
+        elif self.model_config.model_pred == "velocity":
+            velocity_pred = model_pred
+
+            if self.model_config.loss_target == "velocity":
+                target_v = clean_image - noisy_image
+                return F.mse_loss(
+                    velocity_pred,
+                    target_v,
+                    reduction="mean",
+                )
+            else:
+                raise NotImplementedError(
+                    "Velocity prediction with image loss is not implemented yet."
+                )
+        elif self.model_config.model_pred == "noise":
+            raise NotImplementedError("Noise prediction is not implemented yet.")
         else:
-            raise ValueError(f"Unknown loss target: {self.model_config.loss_target}")
+            raise ValueError(f"Unknown model_pred: {self.model_config.model_pred}")
 
     def train_step(self, batch: dict) -> torch.Tensor:
         images: torch.Tensor = batch["image"]
@@ -185,7 +207,7 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
 
         # 4. Calculate the loss
         l2_loss = self.treat_loss(
-            image_pred=model_pred,
+            model_pred=model_pred,
             noisy_image=noisy_image,
             clean_image=images,
             timesteps=timesteps,

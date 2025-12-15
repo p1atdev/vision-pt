@@ -5,7 +5,9 @@ from typing import Literal
 from pydantic import BaseModel
 
 from ...utils.dtype import str_to_dtype
+
 # from ...modules.attention import AttentionImplementation
+from ...modules.loss.flow_match import ModelPredictionType
 
 
 class DenoiserConfig(BaseModel):
@@ -76,6 +78,9 @@ class JiTConfig(BaseModel):
 
     context_encoder: ContextConfig
     denoiser: DenoiserConfig = JiT_B_16_Config()
+
+    # default JiT is x-pred (image prediction)
+    model_pred: ModelPredictionType = "image"  # "image" | "velocity" | "noise"
 
     @property
     def torch_dtype(self) -> torch.dtype:
