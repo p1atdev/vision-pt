@@ -95,9 +95,10 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     def treat_loss(
         self,
         model_pred: torch.Tensor,
-        noisy_image: torch.Tensor,
-        clean_image: torch.Tensor,
-        timesteps: torch.Tensor,
+        noisy_image: torch.Tensor,  # model input
+        clean_image: torch.Tensor,  # x
+        random_noise: torch.Tensor,  # epsilon
+        timesteps: torch.Tensor,  # t
     ):
         if self.model_config.model_pred == "image":
             image_pred = model_pred
@@ -135,7 +136,7 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             velocity_pred = model_pred
 
             if self.model_config.loss_target == "velocity":
-                target_v = clean_image - noisy_image
+                target_v = clean_image - random_noise
                 return F.mse_loss(
                     velocity_pred,
                     target_v,
@@ -210,6 +211,7 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             model_pred=model_pred,
             noisy_image=noisy_image,
             clean_image=images,
+            random_noise=_random_noise,  # only for v-pred
             timesteps=timesteps,
         )
 
