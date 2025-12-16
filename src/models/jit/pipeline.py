@@ -345,12 +345,12 @@ class JiTModel(nn.Module):
                             image=image_pred_positive,
                             noisy=noisy_image,
                             timestep=timestep.expand(batch_size),
-                        )
+                        ).to(model_pred.dtype)
                         v_pred_negative = self.image_to_velocity(
                             image=image_pred_negative,
                             noisy=noisy_image,
                             timestep=timestep.expand(batch_size),
-                        )
+                        ).to(model_pred.dtype)
                         velocity = v_pred_positive + cfg_scale * (
                             v_pred_positive - v_pred_negative
                         )
@@ -388,7 +388,7 @@ class JiTModel(nn.Module):
                             image=model_pred[:batch_size],
                             noisy=noisy_image,
                             timestep=timestep.expand(batch_size),
-                        )
+                        ).to(model_pred.dtype)
                     elif self.config.model_pred == "velocity":
                         velocity = model_pred[:batch_size]
                     elif self.config.model_pred == "noise":
