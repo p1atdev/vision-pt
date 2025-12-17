@@ -52,7 +52,20 @@ def test_timesteps():
         assert torch.equal(reference, test)
 
 
-def test_position_ids():
+def test_image_position_id_offset():
+    cases = torch.arange(1, 20)
+
+    for case in cases:
+        num_patches = case.item()
+        start_id = (num_patches // 2) - num_patches
+        end_id = num_patches // 2
+
+        assert end_id - start_id == num_patches, (
+            f"num_patches: {num_patches}, start_id: {start_id}, end_id: {end_id}"
+        )
+
+
+def test_image_position_ids():
     patch_size = 16
     height = 256
     width = 256
@@ -60,15 +73,13 @@ def test_position_ids():
     h_patches = height // patch_size
     w_patches = width // patch_size
 
+    h_start_id = h_patches // 2 - h_patches
     h_end_id = h_patches // 2
-    h_start_id = (
-        h_end_id - h_patches
-    )  # even: -h_patches//2 ~ h_patches//2-1, odd: -(h_patches//2)~h_patches//2
+    # even: -h_patches//2 ~ h_patches//2-1, odd: -(h_patches//2)~h_patches//2
 
+    w_start_id = w_patches // 2 - w_patches
     w_end_id = w_patches // 2
-    w_start_id = (
-        w_end_id - w_patches
-    )  # even: -w_patches//2 ~ w_patches//2-1, odd: -(w_patches//2)~w_patches//2
+    # even: -w_patches//2 ~ w_patches//2-1, odd: -(w_patches//2)~w_patches//2
 
     position_ids = torch.zeros(
         h_patches,
@@ -224,8 +235,8 @@ def test_new_jit_pipeline():
     assert isinstance(model.denoiser, JiT)
 
     batch_size = 2
-    height = 256
-    width = 256
+    height = 64
+    width = 64
     in_channels = 3
 
     image = torch.randn(
@@ -263,8 +274,8 @@ def test_new_jit_pipeline():
     pil_images = model.generate(
         prompt="general 1girl solo looking_at_viewer",
         num_inference_steps=20,
-        height=256,
-        width=256,
+        height=160,
+        width=144,
         seed=42,
         cfg_scale=2.0,
         device=torch.device("cpu"),

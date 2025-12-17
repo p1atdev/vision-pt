@@ -136,6 +136,7 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             velocity_pred = model_pred
 
             if self.model_config.loss_target == "velocity":
+                # we don't want to scale with timestep_eps, so we directly compute v
                 target_v = clean_image - random_noise
                 return F.mse_loss(
                     velocity_pred,

@@ -116,7 +116,7 @@ class RopeEmbedder:
         rope_theta: float = 256.0,  # ref: Z-Image
         axes_dims: list[int] = [32, 64, 64],  # text, height, width
         axes_lens: list[int] = [256, 128, 128],  # text, height, width
-        zero_centered: list[bool] = [False, True, True],
+        zero_centered: list[bool] = [False, True, True],  # text, height, width
     ):
         self.rope_theta = rope_theta
         self.axes_dims = axes_dims
@@ -129,8 +129,11 @@ class RopeEmbedder:
             theta=self.rope_theta,
             dims=self.axes_dims,
             lens=self.axes_lens,
-            zero_centered=self.zero_centered,
         )
+
+    def get_offset(self, axis: int) -> int:
+        """Get position offset for given axis."""
+        return self.axes_lens[axis] // 2 if self.zero_centered[axis] else 0
 
     @staticmethod
     def get_rope_freqs(
@@ -176,15 +179,16 @@ class RopeEmbedder:
         theta: float,
         dims: list[int],
         lens: list[int],
-        zero_centered: list[bool],
+        zero_centered: list[bool] = [False, True, True],
     ):
         freqs_cis = []
 
         for i, (dim, len_) in enumerate(zip(dims, lens)):
             freq_cis = RopeEmbedder.get_rope_freqs(
                 dim=dim,
+                # len_: 128 -> -64 to 63
                 min_position=(len_ // 2) - len_ if zero_centered[i] else 0,
-                max_position=len_ // 2 if zero_centered[i] else len_,
+                max_position=(len_ // 2) if zero_centered[i] else len_,
                 theta=theta,
             )  # (len_, dim//2) complex64
 
@@ -208,7 +212,7 @@ class RopeEmbedder:
                     freqs_cis[i].shape[-1],
                 )
                 .to(torch.int64)
-            )
+            ) + self.get_offset(axis=i)  # adjust for zero-centered axes
             result.append(
                 torch.gather(
                     freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1),
@@ -478,7 +482,6 @@ class JiT(nn.Module):
             rope_theta=config.rope_theta,
             axes_dims=config.rope_axes_dims,
             axes_lens=config.rope_axes_lens,
-            zero_centered=config.rope_zero_centered,
         )
 
         # class condition or text embedding
@@ -575,7 +578,8 @@ class JiT(nn.Module):
         # height (y-index)
         position_ids[:, :, 1] = (
             torch.arange(
-                h_patches,
+                start=h_patches // 2 - h_patches,
+                end=h_patches // 2,
             )
             .unsqueeze(1)
             .repeat(1, w_patches)
@@ -583,7 +587,8 @@ class JiT(nn.Module):
         # width (x-index)
         position_ids[:, :, 2] = (
             torch.arange(
-                w_patches,
+                start=w_patches // 2 - w_patches,
+                end=w_patches // 2,
             )
             .unsqueeze(0)
             .repeat(h_patches, 1)
@@ -694,7 +699,7 @@ class JiT(nn.Module):
         context_embed = self.context_embedder(context)
         context_len = context_embed.shape[1]
 
-        patches = self.patch_embedder(image)  # [B, N, hidden_dim]]
+        patches = self.patch_embedder(image)  # [B, N, hidden_dim]
         patches_len = patches.shape[1]
 
         # context -> time -> patches
