@@ -190,18 +190,20 @@ class TextToImageBucket(AspectRatioBucket):
         if "image" in batch:
             # this is a list of image paths
             image_paths: list[str] = batch["image"]  # type: ignore
-            # _images = [io.decode_image(image_path) for image_path in image_paths]
-            _pil_images = [Image.open(image_path) for image_path in image_paths]
-            #  convert to tensor and apply transforms
-            _images = [self.resize_transform(image) for image in _pil_images]
 
             images: list[torch.Tensor] = []
             original_size: list[torch.Tensor] = []
             target_size: list[torch.Tensor] = []
             crop_coords_top_left: list[torch.Tensor] = []
-            for image in _images:
+
+            # Process one image at a time to reduce memory usage
+            for image_path in image_paths:
+                pil_image = Image.open(image_path)
+                transformed = self.resize_transform(pil_image)
+                pil_image.close()  # Release PIL image immediately
+
                 crop_image, top, left, crop_height, crop_width, height, width = (
-                    self.random_crop(image)
+                    self.random_crop(transformed)
                 )
                 images.append(crop_image)
                 original_size.append(torch.tensor([height, width]))
