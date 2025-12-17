@@ -57,6 +57,10 @@ class ClassContextConfig(BaseModel):
     type: Literal["class"] = "class"
     label2id_map_path: str
 
+    splitter: str = " "  # ","
+
+    do_mask_padding: bool = True
+
     @property
     def label2id(self) -> dict[str, int]:
         with open(self.label2id_map_path, "r") as f:

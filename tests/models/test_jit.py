@@ -194,6 +194,8 @@ def test_class_encoder_forward():
     model = ClassEncoder(
         label2id=label2id,
         embedding_dim=256,
+        splitter=" ",
+        do_mask_padding=True,
     )
 
     class_prompts = [

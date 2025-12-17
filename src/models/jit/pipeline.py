@@ -37,6 +37,8 @@ class JiTModel(nn.Module):
             self.class_encoder = ClassEncoder(
                 label2id=config.context_encoder.label2id,
                 embedding_dim=config.denoiser.context_dim,
+                splitter=config.context_encoder.splitter,
+                do_mask_padding=config.context_encoder.do_mask_padding,
             )
             self.text_encoder = None  # type: ignore
         else:

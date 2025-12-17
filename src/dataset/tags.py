@@ -25,6 +25,7 @@ def format_general_character_tags(
     rating: str,
     separator: str = ", ",
     group_separator: str = "|||",
+    score: int | None = None,
 ):
     people_tags = []
     general_tags = []
@@ -45,6 +46,21 @@ def format_general_character_tags(
     else:
         rating_tags.append("safe")
 
+    # quality tags
+    quality_tags = []
+    if score is not None:
+        if score >= 20:
+            quality_tags.append("masterpiece")
+        elif score >= 10:
+            quality_tags.append("best_quality")
+        elif score >= 5:
+            quality_tags.append("high_quality")
+        elif score < 0:
+            quality_tags.append("worst_quality")
+        else:
+            # 0~4
+            quality_tags.append("low_quality")
+
     return group_separator.join(
         [
             part
@@ -52,6 +68,8 @@ def format_general_character_tags(
                 separator.join(people_tags),
                 separator.join(character),
                 separator.join(general_tags),
+                separator.join(rating_tags),
+                separator.join(quality_tags),
             ]
             if part.strip() != ""  # skip empty parts
         ]

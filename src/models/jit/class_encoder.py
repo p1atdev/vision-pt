@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from ..utils import PromptType
+from .config import ClassContextConfig
 
 
 class ClassTokenizerOutput(NamedTuple):
@@ -17,11 +18,12 @@ class ClassTokenizer:
         self,
         label2id: dict[str, int],
         splitter: str = " ",
+        do_mask_padding: bool = True,
     ) -> None:
         self.label2id = label2id
         self.id2label = {v: k for k, v in label2id.items()}
         self.splitter = splitter
-
+        self.do_mask_padding = do_mask_padding
         self.pad_token_id = len(label2id)
 
         assert all([id < len(label2id) for id in label2id.values()]), (
@@ -52,9 +54,10 @@ class ClassTokenizer:
             ids = []
 
             for label in text.split(self.splitter):
-                if label.strip() == "":
+                label = label.strip()
+                if label == "":
                     continue
-                id = self.label2id.get(label.strip())
+                id = self.label2id.get(label)
                 if id is not None:  # 0 is OK
                     ids.append(id)
                     masks.append(1)
@@ -79,7 +82,11 @@ class ClassTokenizer:
 
         return ClassTokenizerOutput(
             class_ids=torch.tensor(padded_class_ids, dtype=torch.long),
-            attention_mask=torch.tensor(padded_masks, dtype=torch.long),
+            attention_mask=(
+                torch.tensor(padded_masks, dtype=torch.long)
+                if self.do_mask_padding
+                else torch.ones_like(torch.tensor(padded_class_ids))  # no mask
+            ),
         )
 
 
@@ -93,6 +100,8 @@ class ClassEncoder(nn.Module):
         self,
         label2id: dict[str, int],
         embedding_dim: int,
+        splitter: str = " ",
+        do_mask_padding: bool = True,
     ):
         super().__init__()
 
@@ -106,7 +115,11 @@ class ClassEncoder(nn.Module):
             padding_idx=self.num_classes,
         )
 
-        self.tokenizer = ClassTokenizer(label2id)
+        self.tokenizer = ClassTokenizer(
+            label2id=label2id,
+            splitter=splitter,
+            do_mask_padding=do_mask_padding,
+        )
 
     def initialize_weights(self):
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
