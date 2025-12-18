@@ -3,6 +3,7 @@ from itertools import islice
 from PIL import Image
 from pathlib import Path
 import json
+import os
 from datetime import time, datetime, date, timezone
 
 import polars as pl
@@ -89,6 +90,18 @@ def main(
     images_dir = outptut_path / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    ids = set(df.select("id").to_series().to_list())
+
+    # skip duplicates
+    print("Checking existing images to skip...")
+    existing_ids = {
+        int(entry.name[:-5])  # remove ".webp"
+        for entry in os.scandir(images_dir)
+        if entry.name.endswith(".webp") and entry.is_file()
+    }
+    ids -= existing_ids
+    print(f"Skipped {len(existing_ids)} existing images")
+
     # save all json
     for row in tqdm(
         df.iter_rows(named=True),
@@ -96,16 +109,10 @@ def main(
         total=df.height,
     ):
         image_id = row["id"]
+        if int(image_id) in existing_ids:
+            continue
         with open(images_dir / f"{image_id}.json", "w") as f:
             json.dump(row, f, indent=2, ensure_ascii=False, default=str)
-
-    ids = df.select("id").to_series().to_list()
-
-    # skip duplicates
-    for image_file in images_dir.glob("*.webp"):
-        image_id = int(image_file.stem)
-        if image_id in ids:
-            ids.remove(image_id)
 
     pool = Danbooru2024WebpDataPool()
     pipe = SimpleImagePipe(pool)
