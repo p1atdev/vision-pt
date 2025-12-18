@@ -189,6 +189,7 @@ def test_class_encoder_forward():
         "dog": 1,
         "car": 2,
         "tree": 3,
+        "long_label_example": 4,
     }
 
     model = ClassEncoder(
@@ -201,6 +202,7 @@ def test_class_encoder_forward():
     class_prompts = [
         "cat dog",
         "car tree dog",
+        "long_label_example cat",
     ]
 
     embedding, attention_mask = model.encode_prompts(
@@ -208,8 +210,8 @@ def test_class_encoder_forward():
         max_token_length=4,
     )
 
-    assert embedding.shape == (2, 4, 256)
-    assert attention_mask.shape == (2, 4)
+    assert embedding.shape == (3, 4, 256)
+    assert attention_mask.shape == (3, 4)
 
     print(model.tokenizer.label2id)
 
