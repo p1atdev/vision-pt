@@ -558,7 +558,7 @@ class JiT(nn.Module):
         self,
         height: int,
         width: int,
-        image_index: int,
+        global_index: int,
     ) -> torch.Tensor:
         # [H/patch_size, W/patch_size]
 
@@ -573,7 +573,7 @@ class JiT(nn.Module):
         )
 
         # image_index
-        position_ids[:, :, 0] = image_index  # image
+        position_ids[:, :, 0] = global_index  # image
 
         # height (y-index)
         position_ids[:, :, 1] = (
@@ -599,45 +599,38 @@ class JiT(nn.Module):
     def prepare_context_position_ids(
         self,
         seq_len: int,
-        context_start_index: int = 0,
-        xy_position: int = 0,
+        global_index: int = 0,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
             self.num_axes,
         )
 
-        # context_index (0, ..., seq_len-1)
-        position_ids[:, 0] = torch.arange(
-            context_start_index,
-            context_start_index + seq_len,
-        )  # text
+        # context_index (i, ..., i)
+        position_ids[:, 0] = global_index  # text
 
-        # token indices are (0, 0)...(0, 0)
-        position_ids[:, 1] = xy_position
-        position_ids[:, 2] = xy_position
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
 
         return position_ids
 
     def prepare_time_position_ids(
         self,
         seq_len: int,
-        time_start_index: int,
-        xy_position: int = 0,
+        global_index: int = 0,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
             self.num_axes,
         )
 
-        # time_index
-        position_ids[:, 0] = torch.arange(
-            time_start_index, time_start_index + seq_len
-        )  # time
+        # time_index (i, ..., i)
+        position_ids[:, 0] = global_index  # time
 
-        # token indices are (0, 0)...(0, 0)
-        position_ids[:, 1] = xy_position
-        position_ids[:, 2] = xy_position
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
 
         return position_ids
 
@@ -705,16 +698,16 @@ class JiT(nn.Module):
         # context -> time -> patches
         context_position_ids = self.prepare_context_position_ids(
             seq_len=context_len,
-            context_start_index=0,
+            global_index=0,
         )
         time_position_ids = self.prepare_time_position_ids(
             seq_len=num_time_tokens,
-            time_start_index=context_len,
+            global_index=1,
         )
         patches_position_ids = self.prepare_image_position_ids(
             height=height,
             width=width,
-            image_index=context_len + num_time_tokens,  # after context and time tokens
+            global_index=2,  # after context and time tokens
         )
 
         # actually: patches -> time -> context
