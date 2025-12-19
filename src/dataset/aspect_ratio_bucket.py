@@ -97,6 +97,9 @@ class AspectRatioBucketManager:
         self.aspect_ratios = self.buckets[:, 0] / self.buckets[:, 1]  # width / height
         self.resolutions = self.buckets[:, 0] * self.buckets[:, 1]  # width * height
 
+        # Sort indices by resolution in descending order
+        self.sorted_indices = np.argsort(-self.resolutions)
+
     def __len__(self) -> int:
         return self.buckets.shape[0]
 
@@ -126,10 +129,7 @@ class AspectRatioBucketManager:
         min_diff = float("inf")
         best_bucket_idx = None
 
-        # Sort indices by resolution in descending order
-        sorted_indices = np.argsort(-self.resolutions)
-
-        for idx in sorted_indices:
+        for idx in self.sorted_indices:
             bucket_w, bucket_h = self.buckets[idx]
 
             # buckets must be smaller than the provided size
