@@ -618,7 +618,7 @@ class JiT(nn.Module):
     def prepare_time_position_ids(
         self,
         seq_len: int,
-        global_index: int = 0,
+        global_index: int = 1,
     ) -> torch.Tensor:
         position_ids = torch.zeros(
             seq_len,
