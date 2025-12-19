@@ -1,12 +1,23 @@
 from pathlib import Path
 import os
 from collections import defaultdict
+import orjson
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 import click
 
 from src.dataset.tags import map_replace_underscore
+
+
+def load_json_file(filepath: str) -> dict | None:
+    """Load a single JSON file."""
+    try:
+        with open(filepath, "r") as f:
+            return orjson.loads(f.read())
+    except Exception:
+        return None
 
 
 @click.command()
@@ -80,20 +91,7 @@ def main(
 ):
     label2id = {}
 
-    all_data = []
-
-    for root, _dirs, files in os.walk(input):
-        for file in tqdm(files):
-            if not file.endswith(".json"):
-                continue
-
-            file = os.path.join(root, file)
-            with open(file, "r") as f:
-                data = json.load(f)
-
-            all_data.append(data)
-
-    ratings = set()
+    ratings: set[str] = set()
     character_count = defaultdict(int)
     copyright_count = defaultdict(int)
     general_count = defaultdict(int)
@@ -101,7 +99,7 @@ def main(
 
     num_tags_in_data = []
 
-    for data in all_data:
+    def process_data(data):
         rating = data.get("rating", "g")
         character_tags = data.get("tag_string_character", "").split(" ")
         copyright_tags = data.get("tag_string_copyright", "").split(" ")
@@ -137,6 +135,22 @@ def main(
             + len(meta_tags)
         )
 
+    # Collect all JSON file paths first
+    json_files = []
+    for root, _dirs, files in os.walk(input):
+        for file in files:
+            if file.endswith(".json"):
+                json_files.append(os.path.join(root, file))
+
+    print(f"Found {len(json_files)} JSON files")
+
+    with ThreadPoolExecutor() as executor:
+        futures = {executor.submit(load_json_file, f): f for f in json_files}
+        for future in tqdm(as_completed(futures), total=len(json_files)):
+            data = future.result()
+            if data is not None:
+                process_data(data)
+
     print(
         f"Found {len(ratings)} ratings, {len(character_count)} characters, {len(general_count)} general tags."
     )
@@ -146,12 +160,6 @@ def main(
     print(f"Average number of tags per data: {avg_num_tags:.2f}")
     print(f"Max number of tags per data: {max_num_tags}")
     print(f"Min number of tags per data: {min_num_tags}")
-
-    # # top 100 general tags
-    # print(dict(sorted(general_count.items(), key=lambda x: x[1], reverse=True)[:10]))
-    # # bottom 10 general tags
-    # print(dict(sorted(general_count.items(), key=lambda x: x[1])[:10]))
-    # return
 
     popular_general_tags = {
         tag for tag, count in general_count.items() if count >= general_threshold
@@ -176,7 +184,50 @@ def main(
 
     # filter meta tags
     for tag, _count in list(meta_count.items()):
-        if any(word in tag for word in ["request", "comment", "bad", "source", ""]):
+        if any(
+            word in tag
+            for word in [
+                "request",
+                "comment",
+                "bad",
+                "source",
+                "translat",  # translate | translation
+                "commission",
+                "scan",
+                "account",
+                "version",
+                "md5",
+                "mismatch",
+                "revision",
+                "link",
+                "upload",
+                "spoilter",
+                "variant",
+                "artist",
+                "available",
+                "reward",
+                "language",
+                "annotate",
+                "sample",
+                "check",
+                "corrupted",
+                "metadata",
+                "waifu2x",
+                "topic",
+                "text",
+                "trace",
+                "issue",
+                "edit",
+                # useless medium
+                "photoshop",
+                "studio",
+                "krita",
+                "procreate",
+                "paint.net",
+                "gimp",
+                "painttool",  # sai
+            ]
+        ):
             del meta_count[tag]
             continue
 
@@ -187,12 +238,22 @@ def main(
         f"Filtered to {len(popular_meta_tags)} popular meta tags. (threshold: {meta_threshold})"
     )
 
+    # rename rating tags
+    rating_rename_map = {
+        "g": "general",
+        "s": "sensitive",
+        "q": "questionable",
+        "e": "explicit",
+    }
+    ratings = {rating_rename_map.get(r, r) for r in ratings}
+
     all_labels = (
         list(special_tags)
-        # + sorted(list(ratings)) # all sfw
+        + sorted(list(ratings))
         + sorted(list(popular_copyright_tags))
         + sorted(list(popular_character_tags))
         + sorted(list(popular_general_tags))
+        + sorted(list(popular_meta_tags))
     )
     all_labels = map_replace_underscore(all_labels)  # escape underscores except kaomoji
 
@@ -203,6 +264,7 @@ def main(
         "copyrights": copyright_count,
         "characters": character_count,
         "general": general_count,
+        "meta": meta_count,
         "total": len(all_labels),
     }
 
