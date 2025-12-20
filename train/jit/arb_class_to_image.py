@@ -84,12 +84,22 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             dtype=self.model_config.torch_dtype,
             device=self.accelerator.device,
         )
+        original_size = torch.tensor(
+            [[256, 256]], device=self.accelerator.device
+        ).repeat(batch_size, 1)
+        target_size = original_size.clone()
+        crop_coords = torch.tensor([[0, 0]], device=self.accelerator.device).repeat(
+            batch_size, 1
+        )
 
         with self.accelerator.autocast(), torch.no_grad():
             _model_pred = self.model.denoiser(
                 image=noise,
                 context=prompt,
                 timestep=timestep,
+                original_size=original_size,
+                target_size=target_size,
+                crop_coords=crop_coords,
             )
 
     def treat_loss(
@@ -140,6 +150,10 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     def train_step(self, batch: dict) -> torch.Tensor:
         images: torch.Tensor = batch["image"]
         caption = batch["caption"]
+        original_size = batch["original_size"]
+        target_size = batch["target_size"]
+        crop_coords = batch["crop_coords_top_left"]
+
         dtype = self.model_config.torch_dtype
 
         drop_context = random.random() < self.model_config.drop_context_rate
@@ -190,6 +204,9 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             timestep=timesteps.to(dtype=dtype),
             context=context.to(dtype=dtype),
             context_mask=attention_mask,
+            original_size=original_size,
+            target_size=target_size,
+            crop_coords=crop_coords,
         )
 
         # 4. Calculate the loss

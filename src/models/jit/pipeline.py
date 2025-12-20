@@ -221,6 +221,32 @@ class JiTModel(nn.Module):
 
         return prompt_embeddings, attention_mask
 
+    def prepare_image_size_inputs(
+        self,
+        width: int,
+        height: int,
+        batch_size: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        original_size = torch.tensor(
+            [[height, width]],
+            dtype=dtype,
+            device=device,
+        ).repeat(batch_size, 1)
+        target_size = torch.tensor(
+            [[height, width]],
+            dtype=dtype,
+            device=device,
+        ).repeat(batch_size, 1)
+        crop_coords = torch.tensor(
+            [[0, 0]],
+            dtype=dtype,
+            device=device,
+        ).repeat(batch_size, 1)
+
+        return original_size, target_size, crop_coords
+
     def to_pil_images(self, tensor: torch.Tensor) -> list[Image.Image]:
         return tensor_utils.tensor_to_images(tensor)
 
@@ -275,6 +301,80 @@ class JiTModel(nn.Module):
     ) -> list[str]:
         return prompt if isinstance(prompt, list) else [prompt]
 
+    def make_velocity_pred(
+        self,
+        model_pred: torch.Tensor,
+        noisy_image: torch.Tensor,
+        timestep: torch.Tensor,
+    ):
+        batch_size = noisy_image.shape[0]
+
+        if self.config.model_pred == "image":
+            velocity = self.image_to_velocity(
+                image=model_pred[:batch_size],
+                noisy=noisy_image,
+                timestep=timestep.expand(batch_size),
+            ).to(model_pred.dtype)
+        elif self.config.model_pred == "velocity":
+            velocity = model_pred[:batch_size]
+        elif self.config.model_pred == "noise":
+            raise NotImplementedError("Noise prediction is not implemented yet.")
+        else:
+            raise ValueError(f"Unknown model_pred: {self.config.model_pred}")
+
+        return velocity
+
+    def make_cfg_velocity_pred(
+        self,
+        model_pred: torch.Tensor,
+        noisy_image: torch.Tensor,
+        timestep: torch.Tensor,
+        cfg_scale: float,
+        do_cfg_renorm: bool = False,
+        do_dynamic_thresholding: bool = False,
+    ):
+        batch_size = noisy_image.shape[0]
+
+        if self.config.model_pred == "image":
+            image_pred_positive, image_pred_negative = model_pred.chunk(2)
+            v_pred_positive = self.image_to_velocity(
+                image=image_pred_positive,
+                noisy=noisy_image,
+                timestep=timestep.expand(batch_size),
+            ).to(model_pred.dtype)
+            v_pred_negative = self.image_to_velocity(
+                image=image_pred_negative,
+                noisy=noisy_image,
+                timestep=timestep.expand(batch_size),
+            ).to(model_pred.dtype)
+            velocity = v_pred_positive + cfg_scale * (v_pred_positive - v_pred_negative)
+        elif self.config.model_pred == "velocity":
+            v_pred_positive, v_pred_negative = model_pred.chunk(2)
+            velocity = v_pred_positive + cfg_scale * (v_pred_positive - v_pred_negative)
+        elif self.config.model_pred == "noise":
+            raise NotImplementedError(
+                "CFG with noise prediction is not implemented yet."
+            )
+        else:
+            raise ValueError(f"Unknown model_pred: {self.config.model_pred}")
+
+        if do_cfg_renorm:
+            velocity = self.renorm_cfg(
+                positive_velocity=v_pred_positive,
+                cfg_velocity=velocity,
+            )
+        if do_dynamic_thresholding:
+            # re-calculate the image prediction after cfg
+            image_pred = noisy_image + velocity * (1 - timestep)
+            image_pred = self.dynamic_thresholding(image_pred)
+            velocity = self.image_to_velocity(
+                image=image_pred,
+                noisy=noisy_image,
+                timestep=timestep.expand(batch_size),
+            )
+
+        return velocity
+
     @torch.inference_mode()
     def generate(
         self,
@@ -325,82 +425,54 @@ class JiTModel(nn.Module):
             max_token_length=max_token_length,
             do_cfg=do_cfg,
         )
+        original_size, target_size, crop_coords = self.prepare_image_size_inputs(
+            width=width,
+            height=height,
+            batch_size=batch_size * 2 if do_cfg else batch_size,
+            dtype=execution_dtype,
+            device=execution_device,
+        )
 
         # 4. Denoising loop
         with self.progress_bar(total=num_inference_steps) as pbar:
             for i, timestep in enumerate(timesteps[:-1]):
-                image_input = torch.cat([noisy_image] * 2) if do_cfg else noisy_image
+                is_in_cfg_time = (  # cfg interval check
+                    cfg_time_range[0] <= float(timestep) <= cfg_time_range[1]
+                )
 
-                batch_timestep = timestep.expand(image_input.shape[0])
+                image_input = (
+                    torch.cat([noisy_image] * 2)
+                    if do_cfg and is_in_cfg_time
+                    else noisy_image
+                )
+                _batch_size = image_input.shape[0]
 
                 model_pred = self.denoiser(
                     image=image_input,
-                    timestep=batch_timestep,
-                    context=prompt_embeddings,
-                    context_mask=attention_mask,
+                    timestep=timestep.expand(_batch_size),
+                    context=prompt_embeddings[:_batch_size],
+                    context_mask=attention_mask[:_batch_size],
+                    original_size=original_size[:_batch_size],
+                    target_size=target_size[:_batch_size],
+                    crop_coords=crop_coords[:_batch_size],
                 )
 
-                if do_cfg and cfg_time_range[0] <= float(timestep) <= cfg_time_range[1]:
-                    if self.config.model_pred == "image":
-                        image_pred_positive, image_pred_negative = model_pred.chunk(2)
-                        v_pred_positive = self.image_to_velocity(
-                            image=image_pred_positive,
-                            noisy=noisy_image,
-                            timestep=timestep.expand(batch_size),
-                        ).to(model_pred.dtype)
-                        v_pred_negative = self.image_to_velocity(
-                            image=image_pred_negative,
-                            noisy=noisy_image,
-                            timestep=timestep.expand(batch_size),
-                        ).to(model_pred.dtype)
-                        velocity = v_pred_positive + cfg_scale * (
-                            v_pred_positive - v_pred_negative
-                        )
-                    elif self.config.model_pred == "velocity":
-                        v_pred_positive, v_pred_negative = model_pred.chunk(2)
-                        velocity = v_pred_positive + cfg_scale * (
-                            v_pred_positive - v_pred_negative
-                        )
-                    elif self.config.model_pred == "noise":
-                        raise NotImplementedError(
-                            "CFG with noise prediction is not implemented yet."
-                        )
-                    else:
-                        raise ValueError(
-                            f"Unknown model_pred: {self.config.model_pred}"
-                        )
+                if do_cfg and is_in_cfg_time:
+                    velocity = self.make_cfg_velocity_pred(
+                        model_pred=model_pred,
+                        noisy_image=noisy_image,
+                        timestep=timestep,
+                        cfg_scale=cfg_scale,
+                        do_cfg_renorm=do_cfg_renorm,
+                        do_dynamic_thresholding=do_dynamic_thresholding,
+                    )
 
-                    if do_cfg_renorm:
-                        velocity = self.renorm_cfg(
-                            positive_velocity=v_pred_positive,
-                            cfg_velocity=velocity,
-                        )
-                    if do_dynamic_thresholding:
-                        # re-calculate the image prediction after cfg
-                        image_pred = noisy_image + velocity * (1 - timestep)
-                        image_pred = self.dynamic_thresholding(image_pred)
-                        velocity = self.image_to_velocity(
-                            image=image_pred,
-                            noisy=noisy_image,
-                            timestep=timestep.expand(batch_size),
-                        )
                 else:
-                    if self.config.model_pred == "image":
-                        velocity = self.image_to_velocity(
-                            image=model_pred[:batch_size],
-                            noisy=noisy_image,
-                            timestep=timestep.expand(batch_size),
-                        ).to(model_pred.dtype)
-                    elif self.config.model_pred == "velocity":
-                        velocity = model_pred[:batch_size]
-                    elif self.config.model_pred == "noise":
-                        raise NotImplementedError(
-                            "Noise prediction is not implemented yet."
-                        )
-                    else:
-                        raise ValueError(
-                            f"Unknown model_pred: {self.config.model_pred}"
-                        )
+                    velocity = self.make_velocity_pred(
+                        model_pred=model_pred,
+                        noisy_image=noisy_image,
+                        timestep=timestep,
+                    )
 
                 # new noisy image
                 noisy_image = noisy_image + velocity * (timesteps[i + 1] - timestep)

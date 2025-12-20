@@ -119,6 +119,7 @@ def test_denoiser_forward():
         context_dim=768,
         hidden_size=768,
         num_heads=12,
+        context_start_block=4,
         rope_axes_dims=[16, 24, 24],
         rope_axes_lens=[256, 128, 128],
         rope_zero_centered=[False, True, True],
@@ -140,7 +141,7 @@ def test_denoiser_forward():
     # uniform [0, 1)
     timestep = torch.rand(batch_size)
 
-    context_len = 128
+    context_len = 64
     context_dim = config.context_dim
 
     context = torch.randn(
@@ -149,10 +150,18 @@ def test_denoiser_forward():
         context_dim,
     )
 
+    original_size = torch.tensor([[height, width]]).repeat(batch_size, 1)
+    target_size = original_size.clone()
+    crop_coords = torch.tensor([[0, 0]]).repeat(batch_size, 1)
+
     output = model(
         image=image,
         timestep=timestep,
         context=context,
+        context_mask=None,
+        original_size=original_size,
+        target_size=target_size,
+        crop_coords=crop_coords,
     )
 
     assert output.shape == image.shape
@@ -223,6 +232,7 @@ def test_new_jit_pipeline():
             context_dim=768,
             hidden_size=768,
             num_heads=12,
+            context_start_block=4,
             rope_axes_dims=[16, 24, 24],
             rope_axes_lens=[256, 128, 128],
             rope_zero_centered=[False, True, True],
@@ -263,11 +273,18 @@ def test_new_jit_pipeline():
         max_token_length=32,
     )
 
+    original_size = torch.tensor([[height, width]]).repeat(batch_size, 1)
+    target_size = original_size.clone()
+    crop_coords = torch.tensor([[0, 0]]).repeat(batch_size, 1)
+
     output = model.denoiser(
         image=image,
         timestep=timestep,
         context=embedding,
         context_mask=attention_mask,
+        original_size=original_size,
+        target_size=target_size,
+        crop_coords=crop_coords,
     )
 
     assert output.shape == image.shape

@@ -30,6 +30,7 @@ class DenoiserConfig(BaseModel):
     rope_zero_centered: list[bool] = [False, True, True]
 
     context_dim: int
+    context_start_block: int = 0
 
 
 class JiT_B_16_Config(DenoiserConfig):
@@ -41,6 +42,7 @@ class JiT_B_16_Config(DenoiserConfig):
     bottleneck_dim: int = 128
 
     context_dim: int = 768
+    context_start_block: int = 4  # 0, 1, 2, 3: no context, 4+: with context
 
     rope_axes_dims: list[int] = [16, 24, 24]  # sum = 64 = 768 / 12
     rope_axes_lens: list[int] = [

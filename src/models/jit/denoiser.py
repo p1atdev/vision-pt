@@ -477,6 +477,12 @@ class JiT(nn.Module):
             requires_grad=True,
         )
 
+        # image size embedder
+        self.image_size_embedder = TimestepEmbedder(
+            hidden_dim=config.hidden_size,
+            freq_embedding_size=256,
+        )
+
         # RoPE embedder
         self.rope_embedder = RopeEmbedder(
             rope_theta=config.rope_theta,
@@ -615,25 +621,6 @@ class JiT(nn.Module):
 
         return position_ids
 
-    def prepare_time_position_ids(
-        self,
-        seq_len: int,
-        global_index: int = 1,
-    ) -> torch.Tensor:
-        position_ids = torch.zeros(
-            seq_len,
-            self.num_axes,
-        )
-
-        # time_index (i, ..., i)
-        position_ids[:, 0] = global_index  # time
-
-        # token indices are (0, 0)...(seq_len-1, seq_len-1)
-        position_ids[:, 1] = torch.arange(seq_len)
-        position_ids[:, 2] = torch.arange(seq_len)
-
-        return position_ids
-
     def unpatchify(
         self,
         patches: torch.Tensor,
@@ -668,15 +655,73 @@ class JiT(nn.Module):
 
         return images
 
+    def get_imagesize_embed(
+        self,
+        original_size: torch.Tensor,  # [B, 2] (H, W)
+        target_size: torch.Tensor,  # [B, 2] (H, W)
+        crop_coords: torch.Tensor,  # [B, 2] (top, left)
+    ) -> torch.Tensor:
+        # 1. concat [B, 6]: original_size, target_size, crop_coords
+        size_info = torch.cat(
+            [
+                original_size,
+                target_size,
+                crop_coords,
+            ],
+            dim=1,
+        )  # [B, 6]
+
+        # 2. batchify to [B*6]
+        size_info = size_info.view(-1)
+
+        # 3. get embed [B*6, hidden_dim]
+        size_embed = self.image_size_embedder(size_info)
+
+        # 4. reshape to [B, 6, hidden_dim]
+        size_embed = size_embed.view(
+            -1,
+            6,
+            self.config.hidden_size,
+        )
+
+        return size_embed
+
+    def forward_block(
+        self,
+        block: JiTBlock,
+        tokens: torch.Tensor,
+        freqs_cis: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.gradient_checkpointing and self.training:
+            tokens = checkpoint.checkpoint(  # type: ignore
+                block,
+                tokens,
+                freqs_cis,
+                mask,
+            )
+        else:
+            tokens = block(
+                tokens,
+                rope_freqs=freqs_cis,
+                mask=mask,
+            )
+
+        return tokens
+
     def forward(
         self,
         image: torch.Tensor,  # [B, C, H, W]
         timestep: torch.Tensor,  # [B]
         context: torch.Tensor,  # [B, context_len, context_dim]
+        original_size: torch.Tensor,  # [B, 2] (H, W)
+        target_size: torch.Tensor,  # [B, 2] (H, W)
+        crop_coords: torch.Tensor,  # [B, 2] (top, left)
         context_mask: torch.Tensor | None = None,  # [B, context_len]
     ):
         batch_size, _in_channels, height, width = image.shape
 
+        # time embed + time position embed
         time_embed: torch.Tensor = self.time_embedder(timestep)  # [B, hidden_dim]
         time_tokens = time_embed.unsqueeze(1).repeat(  # add seq_len dim
             1,
@@ -689,31 +734,46 @@ class JiT(nn.Module):
         )  # [B, num_time_tokens, hidden_dim]
         num_time_tokens = time_tokens.shape[1]
 
+        # text / class context embed
         context_embed = self.context_embedder(context)
         context_len = context_embed.shape[1]
 
+        # image size embed
+        imagesize_embed = self.get_imagesize_embed(
+            original_size=original_size,
+            target_size=target_size,
+            crop_coords=crop_coords,
+        )  # [B, 6, hidden_dim]
+        num_imagesize_tokens = imagesize_embed.shape[1]
+
+        # image patch embed
         patches = self.patch_embedder(image)  # [B, N, hidden_dim]
         patches_len = patches.shape[1]
 
-        # context -> time -> patches
+        # context -> time -> imagesize -> patches
         context_position_ids = self.prepare_context_position_ids(
             seq_len=context_len,
             global_index=0,
         )
-        time_position_ids = self.prepare_time_position_ids(
+        time_position_ids = self.prepare_context_position_ids(
             seq_len=num_time_tokens,
             global_index=1,
+        )
+        imagesize_position_ids = self.prepare_context_position_ids(
+            seq_len=num_imagesize_tokens,
+            global_index=2,
         )
         patches_position_ids = self.prepare_image_position_ids(
             height=height,
             width=width,
-            global_index=2,  # after context and time tokens
+            global_index=3,  # after context and time tokens
         )
 
-        # actually: patches -> time -> context
+        # actually: patches -> imagesize -> time -> context
         position_ids = torch.cat(
             [
                 patches_position_ids,
+                imagesize_position_ids,
                 time_position_ids,
                 context_position_ids,
             ],
@@ -734,10 +794,14 @@ class JiT(nn.Module):
         # attention mask
         if context_mask is not None:
             patches_mask = torch.ones(batch_size, patches_len, device=image.device)
+            imagesize_mask = torch.ones(
+                batch_size, num_imagesize_tokens, device=image.device
+            )
             time_mask = torch.ones(batch_size, num_time_tokens, device=image.device)
             mask = torch.cat(
                 [
                     patches_mask,
+                    imagesize_mask,
                     time_mask,
                     context_mask.to(image.device),
                 ],
@@ -747,34 +811,41 @@ class JiT(nn.Module):
             # attend all
             mask = torch.ones(
                 batch_size,
-                patches_len + num_time_tokens + context_len,
+                patches_len + num_imagesize_tokens + num_time_tokens + context_len,
                 device=image.device,
             )
 
-        for _i, block in enumerate(self.blocks):
-            tokens = torch.cat(
-                [
-                    patches,  # 16x16
-                    time_tokens,  # 4
-                    context_embed,  # 64
-                ],
-                dim=1,  # cat in seq_len dimension
+        # no context at initial blocks
+        tokens = torch.cat(
+            [
+                patches,  # 16x16
+                imagesize_embed,  # 6
+                time_tokens,  # 4 | 8
+            ],
+            dim=1,  # cat in seq_len dimension
+        )
+
+        for i, block in enumerate(self.blocks):  # type: ignore
+            block: JiTBlock
+
+            if i == self.config.context_start_block:
+                # add context tokens from this block
+                tokens = torch.cat(
+                    [
+                        tokens,
+                        context_embed,  # 32 | 64
+                    ],
+                    dim=1,  # cat in seq_len dimension
+                )
+
+            tokens = self.forward_block(
+                block,
+                tokens,
+                freqs_cis=freqs_cis[:, : tokens.shape[1], :],
+                mask=mask[:, : tokens.shape[1]],
             )
 
-            if self.gradient_checkpointing and self.training:
-                patches = checkpoint.checkpoint(  # type: ignore
-                    block,
-                    tokens,
-                    freqs_cis,
-                    mask,
-                )[:, :patches_len, :]
-            else:
-                patches = block(
-                    tokens,
-                    rope_freqs=freqs_cis,
-                    mask=mask,
-                )[:, :patches_len, :]  # only keep patch tokens
-
+        patches = tokens[:, :patches_len, :]  # only keep patch tokens
         patches = self.final_layer(patches)
 
         pred_image = self.unpatchify(
