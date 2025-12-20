@@ -17,7 +17,6 @@ from src.dataloader import get_dataloader_for_bucketing
 
 
 def test_generate_buckets():
-    # 1. バケットを生成
     buckets = AspectRatioBucketManager(
         AspectRatioBucketConfig(
             bucket_base_size=1024,
@@ -27,7 +26,22 @@ def test_generate_buckets():
         ).buckets
     )
 
-    assert len(buckets) > 31
+    print(buckets.buckets)
+
+    assert len(buckets) == 31
+
+    buckets_min = AspectRatioBucketManager(
+        AspectRatioBucketConfig(
+            bucket_base_size=64,
+            # start_size=1024,
+            step=64,
+            min_size=64,
+        ).buckets
+    )
+
+    print(buckets_min.buckets)
+
+    assert len(buckets_min) == 1
 
 
 def test_text_to_image_dataset():

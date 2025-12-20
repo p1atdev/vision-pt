@@ -1,8 +1,6 @@
 import os
 import imagesize
 import random
-import hashlib
-import pickle
 from pathlib import Path
 from PIL import Image
 from pydantic import BaseModel
@@ -13,6 +11,7 @@ from collections import defaultdict
 from typing import Sequence, Iterator, NamedTuple
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+import polars as pl
 
 import numpy as np
 import torch
@@ -235,17 +234,26 @@ class TextToImageBucket(AspectRatioBucket):
 
         return batch
 
-    def _generate_ds_from_pairs(self, pairs: list[ImageCaptionPair]) -> Iterator:
-        for pair in pairs:
-            image = str(pair.image)
-            caption = pair.read_caption()
+    def _yield_pair(self, pair: ImageCaptionPair) -> dict:
+        image = str(pair.image)
+        caption = pair.read_caption()
 
-            yield {
-                "image": image,
-                "caption": caption,
-                "width": pair.width,
-                "height": pair.height,
-            }
+        return {
+            "image": image,
+            "caption": caption,
+            "width": pair.width,
+            "height": pair.height,
+        }
+
+    def _generate_ds_from_pairs(self, pairs: list[ImageCaptionPair]) -> Iterator:
+        with ThreadPoolExecutor() as executor:
+            results = executor.map(
+                self._yield_pair,
+                pairs,
+                chunksize=1000,
+            )
+            for result in results:
+                yield result
 
 
 class TextToImageDatasetConfig(AspectRatioBucketConfig):
@@ -264,106 +272,104 @@ class TextToImageDatasetConfig(AspectRatioBucketConfig):
     caption_processors: CaptionProcessorList = []
 
     # cache settings
-    cache_dir: str | None = "cache/buckets"
-    use_cache: bool = True
+    imagesize_cache_path: str | None = None
 
-    def _get_cache_key(self) -> str:
-        """Generate a cache key based on config and folder state."""
-        # Get folder stats for cache invalidation
-        file_count = 0
-        total_size = 0
-
-        for root, _, files in os.walk(self.folder):
-            for f in files:
-                if any(f.endswith(ext) for ext in self.supported_extensions):
-                    file_count += 1
-                    try:
-                        total_size += os.path.getsize(os.path.join(root, f))
-                    except OSError:
-                        pass
-
-        config_str = f"{self.folder}_fc{file_count}_ts{total_size}"
-
-        hash = hashlib.sha256(config_str.encode()).hexdigest()[:16]
-
-        # print(f"Cache config hash: {hash}")
-
-        return hash
-
-    def _get_cache_path(self) -> Path | None:
-        """Get the cache file path."""
-        if self.cache_dir is None:
+    def _get_imagesize_cache_path(self) -> Path | None:
+        if self.imagesize_cache_path is None:
             return None
-        cache_key = self._get_cache_key()
-        folder_name = Path(self.folder).name
-        return Path(self.cache_dir) / f"{folder_name}_{cache_key}.pkl"
 
-    def _save_bucket_cache(
-        self, bucket_subsets: dict[int, list[ImageCaptionPair]]
-    ) -> None:
+        return Path(self.imagesize_cache_path)
+
+    def _has_imagesize_cache(self) -> bool:
+        """Check if a valid imagesize cache exists."""
+        cache_path = self._get_imagesize_cache_path()
+        if cache_path is None:
+            return False
+
+        return cache_path.exists() and cache_path.stat().st_size > 0
+
+    def _scan_imagesize_cache(self) -> pl.LazyFrame | None:
+        if self.imagesize_cache_path is None:
+            return None
+
+        if not Path(self.imagesize_cache_path).exists():
+            # not yet cached
+            return None
+
+        if self.imagesize_cache_path.endswith(".parquet"):
+            lf = pl.scan_parquet(self.imagesize_cache_path)
+            return lf
+
+        if self.imagesize_cache_path.endswith(".jsonl"):
+            lf = pl.scan_ndjson(self.imagesize_cache_path)
+            return lf
+
+        raise ValueError(
+            f"Unsupported imagesize_cache_path format: {self.imagesize_cache_path}. Supported formats are .parquet, .jsonl"
+        )
+
+    def _save_imagesize_cache(self, pairs: list[ImageCaptionPair]) -> None:
         """Save bucket data to cache."""
-        cache_path = self._get_cache_path()
+        cache_path = self._get_imagesize_cache_path()
         if cache_path is None:
             return
 
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        assert cache_path.suffix == ".jsonl", (
+            "Only .jsonl format is supported for imagesize cache."
+        )
+
+        Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
 
         # Convert ImageCaptionPair to serializable format
-        cache_data = {}
-        for bucket_idx, pairs in bucket_subsets.items():
-            cache_data[bucket_idx] = [
-                {
-                    "image": str(p.image),
-                    "width": p.width,
-                    "height": p.height,
-                    "caption": str(p.caption) if p.caption else None,
-                    "metadata": str(p.metadata) if p.metadata else None,
-                }
-                for p in pairs
-            ]
-
         with open(cache_path, "wb") as f:
-            pickle.dump(cache_data, f)
+            for p in pairs:
+                f.write(
+                    json.dumps(
+                        {
+                            "image": str(p.image),
+                            "width": p.width,
+                            "height": p.height,
+                            "caption": str(p.caption) if p.caption else None,
+                            "metadata": str(p.metadata) if p.metadata else None,
+                        },
+                        ensure_ascii=False,
+                        indent=None,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
 
-        print(f"Bucket cache saved to {cache_path}")
+        print(f"Imagesize cache saved to {cache_path}")
 
-    def _load_bucket_cache(self) -> dict[int, list[ImageCaptionPair]] | None:
-        """Load bucket data from cache if available."""
-        cache_path = self._get_cache_path()
+    def _load_imagesize_cache(self) -> Iterator[ImageCaptionPair]:
+        """Load imagesize data from cache if available.
 
-        if cache_path is None or not cache_path.exists():
-            print("No bucket cache found.")
-            return None
+        Yields:
+            ImageCaptionPair instances from cache.
+            If cache doesn't exist or fails to load, yields nothing.
+        """
+        lf = self._scan_imagesize_cache()
+        if lf is None:
+            return
 
         try:
-            with open(cache_path, "rb") as f:
-                cache_data = pickle.load(f)
+            count = 0
+            for row in lf.collect().iter_rows():
+                pair = ImageCaptionPair(
+                    image=Path(row[0]),
+                    width=row[1],
+                    height=row[2],
+                    caption=Path(row[3]) if row[3] is not None else None,
+                    metadata=Path(row[4]) if row[4] is not None else None,
+                )
+                count += 1
+                yield pair
 
-            # Convert back to ImageCaptionPair
-            bucket_subsets: dict[int, list[ImageCaptionPair]] = {}
-            for bucket_idx, pairs_data in cache_data.items():
-                pairs = []
-                for p in pairs_data:
-                    pair = ImageCaptionPair(
-                        image=Path(p["image"]),
-                        width=p["width"],
-                        height=p["height"],
-                        caption=Path(p["caption"]) if p["caption"] else None,
-                        metadata=Path(p["metadata"]) if p["metadata"] else None,
-                    )
-                    # Verify the image still exists
-                    if not pair.image.exists():
-                        print(f"Cache invalidated: {pair.image} no longer exists")
-                        return None
-                    pairs.append(pair)
-                bucket_subsets[bucket_idx] = pairs
-
-            print(f"Loaded bucket cache from {cache_path}")
-            return bucket_subsets
+            if count > 0:
+                print(f"Loaded {count} entries from imagesize cache")
 
         except Exception as e:
             print(f"Failed to load cache: {e}")
-            return None
+            return
 
     def _process_single_entry(
         self,
@@ -425,7 +431,7 @@ class TextToImageDatasetConfig(AspectRatioBucketConfig):
                 # リストに追加せず、ここで yield する
                 yield (file_path, caption_path, metadata_path)
 
-    def _retrive_images(self) -> Iterator[ImageCaptionPair]:
+    def _retrieve_images(self) -> Iterator[ImageCaptionPair]:
         tasks = list(self._yield_tasks())
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             results = executor.map(
@@ -447,32 +453,36 @@ class TextToImageDatasetConfig(AspectRatioBucketConfig):
         ar_buckets: np.ndarray = self.buckets
         arb_manager = AspectRatioBucketManager(ar_buckets)
 
-        # Try to load from cache first
-        bucket_subsets: dict[int, list[ImageCaptionPair]] | None = None
-        if self.use_cache:
-            bucket_subsets = self._load_bucket_cache()
+        # Check if cache exists before loading
+        has_cache = self._has_imagesize_cache()
+
+        # Use cache if available, otherwise retrieve images
+        if has_cache:
+            pairs_iterator = self._load_imagesize_cache()
+        else:
+            pairs_iterator = self._retrieve_images()
 
         # If cache miss, generate bucket subsets
-        if bucket_subsets is None:
-            bucket_subsets = defaultdict(list)
+        bucket_subsets: dict[int, list[ImageCaptionPair]] = defaultdict(list)
 
-            # classify images into buckets
-            for pair in self._retrive_images():
-                try:
-                    # TODO: current is only the behavior of (not do_upscale)
-                    bucket_idx = arb_manager.find_nearest(pair.width, pair.height)
-                    bucket_subsets[bucket_idx].append(pair)
-                    # TODO: implement upscale
-                except Exception as e:
-                    warnings.warn(
-                        f"Image size {pair.width}x{pair.height} is too small, and `do_upscale` is set False. Skipping... \n{e}",
-                        UserWarning,
-                    )
-                    continue
+        # classify images into buckets
+        for pair in pairs_iterator:
+            try:
+                # TODO: current is only the behavior of (not do_upscale)
+                bucket_idx = arb_manager.find_nearest(pair.width, pair.height)
+                bucket_subsets[bucket_idx].append(pair)
+                # TODO: implement upscale
+            except Exception as e:
+                warnings.warn(
+                    f"Image size {pair.width}x{pair.height} is too small, and `do_upscale` is set False. Skipping... \n{e}",
+                    UserWarning,
+                )
+                continue
 
-            # Save to cache
-            if self.use_cache:
-                self._save_bucket_cache(dict(bucket_subsets))
+        # Save to cache if it wasn't loaded and cache path is configured
+        if self.imagesize_cache_path is not None and not has_cache:
+            all_pairs = [pair for pairs in bucket_subsets.values() for pair in pairs]
+            self._save_imagesize_cache(all_pairs)
 
         # create buckets
         buckets = []

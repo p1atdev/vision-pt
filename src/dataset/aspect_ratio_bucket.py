@@ -3,6 +3,7 @@
 from abc import ABC
 from collections.abc import Sequence
 
+import math
 import numpy as np
 
 import torch.utils.data as data
@@ -48,12 +49,11 @@ def generate_buckets(
         if h_rounded < min_size:
             break
 
-        for h in range(h_rounded, min_size, -step):
-            # (w, h) と (h, w) を追加
-            buckets.append(np.array([w, h]))
-            # w != h_rounded のときのみ (h, w) も追加
-            if w != h_rounded:
-                buckets.append(np.array([h, w]))
+        # (w, h_rounded) を追加（面積が target_area に近い）
+        buckets.append(np.array([w, h_rounded]))
+        # w != h_rounded のときのみ (h_rounded, w) も追加（正方形の重複を避ける）
+        if w != h_rounded:
+            buckets.append(np.array([h_rounded, w]))
 
         w -= step
 
@@ -94,7 +94,9 @@ class AspectRatioBucketManager:
 
     def __init__(self, buckets: np.ndarray):
         self.buckets = buckets
-        self.aspect_ratios = self.buckets[:, 0] / self.buckets[:, 1]  # width / height
+        self.aspect_ratios = np.log2(
+            self.buckets[:, 0] / self.buckets[:, 1]
+        )  # width / height
         self.resolutions = self.buckets[:, 0] * self.buckets[:, 1]  # width * height
 
         # Sort indices by resolution in descending order
@@ -122,17 +124,18 @@ class AspectRatioBucketManager:
         """
         Calculate aspect ratio (width / height)
         """
-        return width / height
+        return math.log2(width / height)
 
     def find_nearest(self, width: int, height: int) -> int:
         provided_ar = self.aspect_ratio(width, height)
         min_diff = float("inf")
         best_bucket_idx = None
 
+        # Iterate through all buckets sorted by resolution (descending)
         for idx in self.sorted_indices:
             bucket_w, bucket_h = self.buckets[idx]
 
-            # buckets must be smaller than the provided size
+            # buckets must be smaller than or equal to the provided size
             if bucket_w > width or bucket_h > height:
                 # if the bucket is larger than the provided size, skip
                 continue
@@ -140,14 +143,14 @@ class AspectRatioBucketManager:
             bucket_ar = self.aspect_ratios[idx]
             diff = abs(provided_ar - bucket_ar)
 
-            # if the difference is larger than the previous one, break
-            if diff > min_diff and best_bucket_idx is not None:
-                break
+            # Update if this bucket has a closer aspect ratio
+            if diff < min_diff:
+                min_diff = diff
+                best_bucket_idx = idx
 
-            min_diff = diff
-            best_bucket_idx = idx
-
-        assert best_bucket_idx is not None
+        assert best_bucket_idx is not None, (
+            f"No bucket found for image size {width}x{height}"
+        )
 
         return best_bucket_idx
 
