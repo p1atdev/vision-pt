@@ -22,7 +22,9 @@ class DenoiserConfig(BaseModel):
     proj_dropout: float = 0.0
 
     bottleneck_dim: int = 128
+
     num_time_tokens: int = 4
+    timestep_scale: float = 1.0  # or 1000.0 like diffusion
 
     rope_theta: float = 256.0
     rope_axes_dims: list[int] = [16, 24, 24]
@@ -31,6 +33,7 @@ class DenoiserConfig(BaseModel):
 
     context_dim: int
     context_start_block: int = 0
+    do_context_fuse: bool = False
 
 
 class JiT_B_16_Config(DenoiserConfig):

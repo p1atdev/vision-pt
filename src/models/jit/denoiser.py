@@ -722,7 +722,9 @@ class JiT(nn.Module):
         batch_size, _in_channels, height, width = image.shape
 
         # time embed + time position embed
-        time_embed: torch.Tensor = self.time_embedder(timestep)  # [B, hidden_dim]
+        time_embed: torch.Tensor = self.time_embedder(
+            timestep * self.config.timestep_scale  # 0~1 -> 0~1000 if needed
+        )  # [B, hidden_dim]
         time_tokens = time_embed.unsqueeze(1).repeat(  # add seq_len dim
             1,
             self.time_position_embeds.shape[0],  # num_time_tokens
@@ -828,7 +830,11 @@ class JiT(nn.Module):
         for i, block in enumerate(self.blocks):  # type: ignore
             block: JiTBlock
 
-            if i == self.config.context_start_block:
+            # fuse context and i == context_start_block,
+            # or not fuse context and i >= context_start_block
+            if i == self.config.context_start_block or (
+                not self.config.do_context_fuse and i >= self.config.context_start_block
+            ):
                 # add context tokens from this block
                 tokens = torch.cat(
                     [
@@ -844,6 +850,10 @@ class JiT(nn.Module):
                 freqs_cis=freqs_cis[:, : tokens.shape[1], :],
                 mask=mask[:, : tokens.shape[1]],
             )
+
+            if not self.config.do_context_fuse and i >= self.config.context_start_block:
+                # remove context tokens after each block
+                tokens = tokens[:, :-context_len, :]
 
         patches = tokens[:, :patches_len, :]  # only keep patch tokens
         patches = self.final_layer(patches)
