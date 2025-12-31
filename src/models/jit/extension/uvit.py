@@ -102,28 +102,6 @@ class PopeAttention(Attention):
         return out
 
 
-# H-DiT
-class LerpMerge(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.factor = nn.Parameter(torch.ones(1) * 0.5)
-
-    def init_weights(self):
-        nn.init.constant_(self.factor, 0.5)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        skip_hidden_states: torch.Tensor,
-    ) -> torch.Tensor:
-        return torch.lerp(
-            input=skip_hidden_states,
-            end=hidden_states,
-            weight=self.factor.to(hidden_states.device).clamp(0.0, 1.0),
-        )
-
-
 class UJiTBlock(nn.Module):
     def __init__(
         self,
@@ -142,7 +120,15 @@ class UJiTBlock(nn.Module):
         super().__init__()
 
         # skip connection
-        self.skip_merge = LerpMerge() if has_skip_connection else nn.Identity()
+        self.skip_merge = (
+            nn.Linear(
+                hidden_dim,
+                hidden_dim,
+                bias=bias,
+            )
+            if has_skip_connection
+            else nn.Identity()
+        )
 
         self.norm1 = FP32RMSNorm(hidden_dim, eps=1e-6)
         self.attn = (
@@ -182,8 +168,7 @@ class UJiTBlock(nn.Module):
     ):
         # skip connection
         if skip_hidden_states is not None:
-            hidden_states = self.skip_merge(
-                hidden_states,
+            hidden_states = hidden_states + self.skip_merge(
                 skip_hidden_states,
             )
 
@@ -348,8 +333,10 @@ class UJiT(JiT):
             # PoPE bias
             if isinstance(m, PopeAttention):
                 nn.init.zeros_(m.pope_bias)
-            elif isinstance(m, LerpMerge):
-                m.init_weights()
+            elif isinstance(m, UJiTBlock):
+                if isinstance(m.skip_merge, nn.Linear):
+                    nn.init.zeros_(m.skip_merge.weight)
+                    nn.init.zeros_(m.skip_merge.bias)
 
     def forward_block(
         self,
