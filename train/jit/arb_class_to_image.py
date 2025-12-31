@@ -44,6 +44,7 @@ class JiTConfigForTraining(JiTConfig):
 
 class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     model: JiTModel
+    model_class: type[JiTModel] = JiTModel
 
     model_config: JiTConfigForTraining
     model_config_class = JiTConfigForTraining
@@ -51,11 +52,11 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     def setup_model(self):
         if self.accelerator.is_main_process:
             if self.model_config.is_from_scratch:
-                self.model = JiTModel.new_with_config(self.model_config)
+                self.model = self.model_class.new_with_config(self.model_config)
                 self.model.to(dtype=self.model_config.torch_dtype)
             elif checkpoint := self.model_config.checkpoint_path:
                 self.accelerator.print(f"Loading model from checkpoint: {checkpoint}")
-                self.model = JiTModel.from_pretrained(
+                self.model = self.model_class.from_pretrained(
                     self.model_config,
                     checkpoint,
                 )

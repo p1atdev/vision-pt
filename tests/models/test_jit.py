@@ -3,11 +3,12 @@ import math
 
 
 from src.modules.timestep.embedding import get_timestep_embedding
-from src.models.jit.denoiser import JiT
+from src.models.jit.denoiser import JiT, Denoiser as JiTDenoiser
 from src.models.jit.config import JiT_B_16_Config, JiTConfig, ClassContextConfig
 from src.models.jit.text_encoder import TextEncoder
 from src.models.jit.class_encoder import ClassEncoder
 from src.models.jit.pipeline import JiTModel
+from src.models.jit.extension.uvit import UJiTModel, Denoiser as UJiTDenoiser
 
 
 def test_timesteps():
@@ -124,7 +125,7 @@ def test_denoiser_forward():
         rope_axes_lens=[256, 128, 128],
         rope_zero_centered=[False, True, True],
     )
-    model = JiT(config)
+    model = JiTDenoiser(config)
 
     batch_size = 2
     height = 256
@@ -246,7 +247,7 @@ def test_new_jit_pipeline():
         config=config,
     )
 
-    assert isinstance(model.denoiser, JiT)
+    assert isinstance(model.denoiser, JiTDenoiser)
 
     batch_size = 2
     height = 64
@@ -304,3 +305,85 @@ def test_new_jit_pipeline():
     )
 
     pil_images[0].save("output/test_jit_pipeline_output.webp")
+
+
+@torch.no_grad()
+def test_new_ujit_pipeline():
+    config = JiTConfig(
+        denoiser=JiT_B_16_Config(
+            context_dim=768,
+            hidden_size=768,
+            num_heads=12,
+            context_start_block=4,
+            rope_axes_dims=[16, 24, 24],
+            rope_axes_lens=[256, 128, 128],
+            rope_zero_centered=[False, True, True],
+            do_context_fuse=False,
+        ),
+        context_encoder=ClassContextConfig(
+            label2id_map_path="models/jit-animeface-labels.json"
+        ),
+    )
+
+    model = UJiTModel.new_with_config(
+        config=config,
+    )
+
+    assert isinstance(model.denoiser, UJiTDenoiser)
+
+    batch_size = 2
+    height = 64
+    width = 64
+    in_channels = 3
+
+    image = torch.randn(
+        batch_size,
+        in_channels,
+        height,
+        width,
+    )
+
+    # uniform [0, 1)
+    timestep = torch.rand(batch_size)
+
+    class_prompts = [
+        "general 1girl solo looking_at_viewer",
+        "sensitive 2girls multiple_girls",
+    ]
+
+    embedding, attention_mask = model.class_encoder.encode_prompts(
+        prompts=class_prompts,
+        max_token_length=32,
+    )
+
+    original_size = torch.tensor([[height, width]]).repeat(batch_size, 1)
+    target_size = original_size.clone()
+    crop_coords = torch.tensor([[0, 0]]).repeat(batch_size, 1)
+
+    output = model.denoiser(
+        image=image,
+        timestep=timestep,
+        context=embedding,
+        context_mask=attention_mask,
+        original_size=original_size,
+        target_size=target_size,
+        crop_coords=crop_coords,
+    )
+
+    assert output.shape == image.shape
+
+    # generate image
+    model.to(device="cpu", dtype=torch.float32)
+
+    pil_images = model.generate(
+        prompt="general 1girl solo looking_at_viewer",
+        num_inference_steps=20,
+        height=160,
+        width=144,
+        seed=42,
+        cfg_scale=2.0,
+        device=torch.device("cpu"),
+        execution_dtype=torch.float32,
+    )
+
+    pil_images[0].save("output/test_ujit_pipeline_output.webp")

@@ -7,7 +7,7 @@ import torch.nn as nn
 from accelerate import init_empty_weights
 from safetensors.torch import load_file
 
-from .denoiser import JiT
+from .denoiser import JiT, Denoiser
 from .text_encoder import TextEncoder
 from .class_encoder import ClassEncoder
 from .config import JiTConfig, ClassContextConfig, TextContextConfig
@@ -18,7 +18,7 @@ from ...utils import tensor as tensor_utils
 
 class JiTModel(nn.Module):
     denoiser: JiT
-    denoiser_class: type[JiT] = JiT
+    denoiser_class: type[JiT] = Denoiser
 
     text_encoder: TextEncoder
     class_encoder: ClassEncoder

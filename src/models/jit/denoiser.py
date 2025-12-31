@@ -389,6 +389,41 @@ class FinalLayer(nn.Module):
         return x
 
 
+class BottleneckFinalLayer(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int,
+        bottleneck_dim: int,
+        patch_size: int,
+        out_channels: int,
+    ):
+        super().__init__()
+
+        self.norm_final = FP32RMSNorm(hidden_dim)
+
+        self.proj_1 = nn.Linear(
+            hidden_dim,
+            bottleneck_dim,
+            bias=False,
+        )
+        self.proj_2 = nn.Linear(
+            bottleneck_dim,
+            patch_size * patch_size * out_channels,
+            bias=True,
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        x = self.norm_final(hidden_states)
+
+        # [B, N, hidden_dim] -> [B, N, bottleneck_dim] -> [B, N, patch_size*patch_size*out_channels]
+        x = self.proj_2(self.proj_1(x))
+
+        return x
+
+
 class JiTBlock(nn.Module):
     def __init__(
         self,
@@ -442,9 +477,9 @@ class JiTBlock(nn.Module):
 
 
 class JiT(nn.Module):
-    def __init__(self, config: DenoiserConfig):
-        super().__init__()
+    training: bool
 
+    def __init__(self, config: DenoiserConfig):
         self.config = config
 
         assert (config.hidden_size // config.num_heads) == sum(config.rope_axes_dims), (
@@ -514,11 +549,20 @@ class JiT(nn.Module):
             ]
         )
 
-        self.final_layer = FinalLayer(
-            hidden_dim=config.hidden_size,
-            mlp_ratio=config.mlp_ratio,
-            patch_size=config.patch_size,
-            out_channels=config.in_channels,
+        self.final_layer = (
+            BottleneckFinalLayer(
+                hidden_dim=config.hidden_size,
+                bottleneck_dim=config.bottleneck_dim,
+                patch_size=config.patch_size,
+                out_channels=config.in_channels,
+            )
+            if self.config.use_output_bottleneck
+            else FinalLayer(
+                hidden_dim=config.hidden_size,
+                mlp_ratio=config.mlp_ratio,
+                patch_size=config.patch_size,
+                out_channels=config.in_channels,
+            )
         )
 
         self.gradient_checkpointing = False
@@ -556,6 +600,15 @@ class JiT(nn.Module):
             self.time_embedder.mlp[2].weight,  # type: ignore
             std=0.02,
         )
+
+        # Zero-init output projections for better gradient flow at init
+        # This makes each block an identity function initially
+        for m in self.modules():
+            if isinstance(m, JiTBlock):
+                nn.init.zeros_(m.attn.to_o.weight)
+                nn.init.zeros_(m.attn.to_o.bias)
+                nn.init.zeros_(m.mlp.w_3.weight)
+                nn.init.zeros_(m.mlp.w_3.bias)
 
     def set_gradient_checkpointing(self, enable: bool = True):
         self.gradient_checkpointing = enable
@@ -652,6 +705,39 @@ class JiT(nn.Module):
         patches = patches.permute(0, 5, 1, 3, 2, 4)
         # -> [B, C, H_img, W_img]
         images = patches.reshape(batch_size, out_channels, height, width)
+
+        return images
+
+    def pixel_shuffle(
+        self,
+        patches: torch.Tensor,
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        """
+        Args:
+            patches: [Batch, NumPatches, PatchSize * PatchSize * OutChannels]
+        """
+        batch_size, num_patches, _ = patches.shape
+
+        patch_size = self.config.patch_size
+
+        h_patches = height // patch_size
+        w_patches = width // patch_size
+
+        assert num_patches == h_patches * w_patches, "Mismatch in number of patches"
+
+        # [B, N, D] -> [B, H_patch, W_patch, D]
+        patches = patches.view(
+            batch_size,
+            h_patches,
+            w_patches,
+            -1,
+        ).permute(0, 3, 1, 2)  # [B, D, H_patch, W_patch]
+
+        # Input:  [B, (C * P * P), H_patch, W_patch]
+        # Output: [B, C, H_patch * P, W_patch * P]
+        images = F.pixel_shuffle(patches, upscale_factor=patch_size)
 
         return images
 
@@ -858,10 +944,24 @@ class JiT(nn.Module):
         patches = tokens[:, :patches_len, :]  # only keep patch tokens
         patches = self.final_layer(patches)
 
-        pred_image = self.unpatchify(
-            patches,
-            height=height,
-            width=width,
+        pred_image = (
+            self.pixel_shuffle(
+                patches,
+                height=height,
+                width=width,
+            )
+            if self.config.use_pixel_shuffle
+            else self.unpatchify(
+                patches,
+                height=height,
+                width=width,
+            )
         )
 
         return pred_image
+
+
+class Denoiser(JiT, nn.Module):
+    def __init__(self, config: DenoiserConfig):
+        nn.Module.__init__(self)
+        JiT.__init__(self, config)

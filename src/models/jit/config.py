@@ -22,6 +22,8 @@ class DenoiserConfig(BaseModel):
     proj_dropout: float = 0.0
 
     bottleneck_dim: int = 128
+    use_output_bottleneck: bool = False
+    use_pixel_shuffle: bool = False
 
     num_time_tokens: int = 4
     timestep_scale: float = 1.0  # or 1000.0 like diffusion
@@ -31,7 +33,7 @@ class DenoiserConfig(BaseModel):
     rope_axes_lens: list[int] = [256, 128, 128]
     rope_zero_centered: list[bool] = [False, True, True]
 
-    context_dim: int
+    context_dim: int = 768
     context_start_block: int = 0
     do_context_fuse: bool = False
 

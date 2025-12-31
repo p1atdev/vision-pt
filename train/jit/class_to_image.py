@@ -44,6 +44,7 @@ class JiTConfigForTraining(JiTConfig):
 
 class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     model: JiTModel
+    model_class: type[JiTModel] = JiTModel
 
     model_config: JiTConfigForTraining
     model_config_class = JiTConfigForTraining
@@ -51,11 +52,11 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
     def setup_model(self):
         if self.accelerator.is_main_process:
             if self.model_config.is_from_scratch:
-                self.model = JiTModel.new_with_config(self.model_config)
+                self.model = self.model_class.new_with_config(self.model_config)
                 self.model.to(dtype=self.model_config.torch_dtype)
             elif checkpoint := self.model_config.checkpoint_path:
                 self.accelerator.print(f"Loading model from checkpoint: {checkpoint}")
-                self.model = JiTModel.from_pretrained(
+                self.model = self.model_class.from_pretrained(
                     self.model_config,
                     checkpoint,
                 )
@@ -84,12 +85,22 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             dtype=self.model_config.torch_dtype,
             device=self.accelerator.device,
         )
+        original_size = torch.tensor(
+            [[256, 256]], device=self.accelerator.device
+        ).repeat(batch_size, 1)
+        target_size = original_size.clone()
+        crop_coords = torch.tensor([[0, 0]], device=self.accelerator.device).repeat(
+            batch_size, 1
+        )
 
         with self.accelerator.autocast(), torch.no_grad():
             _model_pred = self.model.denoiser(
                 image=noise,
                 context=prompt,
                 timestep=timestep,
+                original_size=original_size,
+                target_size=target_size,
+                crop_coords=crop_coords,
             )
 
     def treat_loss(
@@ -199,12 +210,19 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             noise_scale=self.model_config.noise_scale,
         )
 
+        image_size_info = torch.tensor(
+            [[images.shape[2], images.shape[3]]], device=images.device
+        ).repeat(images.shape[0], 1)
+
         # 3. Predict the noise
         model_pred = self.model.denoiser(
             image=noisy_image.to(dtype=dtype),
             timestep=timesteps.to(dtype=dtype),
             context=context.to(dtype=dtype),
             context_mask=attention_mask,
+            original_size=image_size_info,
+            target_size=image_size_info,
+            crop_coords=torch.zeros_like(image_size_info),
         )
 
         # 4. Calculate the loss
