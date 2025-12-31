@@ -571,7 +571,8 @@ class JiT(nn.Module):
         # Initialize weights
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                # nn.init.xavier_uniform_(m.weight)
+                nn.init.normal_(m.weight, std=0.02)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.RMSNorm):
@@ -579,9 +580,9 @@ class JiT(nn.Module):
 
         # patch embed
         w_1 = self.patch_embedder.proj_1.weight
-        nn.init.xavier_uniform_(w_1.view([w_1.shape[0], -1]))
+        nn.init.normal_(w_1.view([w_1.shape[0], -1]), std=0.02)
         w_2 = self.patch_embedder.proj_2.weight
-        nn.init.xavier_uniform_(w_2.view([w_2.shape[0], -1]))
+        nn.init.normal_(w_2.view([w_2.shape[0], -1]), std=0.02)
         if self.patch_embedder.proj_2.bias is not None:
             nn.init.zeros_(self.patch_embedder.proj_2.bias)
 
@@ -601,14 +602,14 @@ class JiT(nn.Module):
             std=0.02,
         )
 
-        # Zero-init output projections for better gradient flow at init
-        # This makes each block an identity function initially
-        for m in self.modules():
-            if isinstance(m, JiTBlock):
-                nn.init.zeros_(m.attn.to_o.weight)
-                nn.init.zeros_(m.attn.to_o.bias)
-                nn.init.zeros_(m.mlp.w_3.weight)
-                nn.init.zeros_(m.mlp.w_3.bias)
+        # # Zero-init output projections for better gradient flow at init
+        # # This makes each block an identity function initially
+        # for m in self.modules():
+        #     if isinstance(m, JiTBlock):
+        #         nn.init.zeros_(m.attn.to_o.weight)
+        #         nn.init.zeros_(m.attn.to_o.bias)
+        #         nn.init.zeros_(m.mlp.w_3.weight)
+        #         nn.init.zeros_(m.mlp.w_3.bias)
 
     def set_gradient_checkpointing(self, enable: bool = True):
         self.gradient_checkpointing = enable

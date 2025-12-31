@@ -102,6 +102,28 @@ class PopeAttention(Attention):
         return out
 
 
+# H-DiT
+class LerpMerge(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.factor = nn.Parameter(torch.ones(1) * 0.5)
+
+    def init_weights(self):
+        nn.init.constant_(self.factor, 0.5)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        skip_hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        return torch.lerp(
+            input=skip_hidden_states,
+            end=hidden_states,
+            weight=self.factor.to(hidden_states.device).clamp(0.0, 1.0),
+        )
+
+
 class UJiTBlock(nn.Module):
     def __init__(
         self,
@@ -119,16 +141,8 @@ class UJiTBlock(nn.Module):
     ):
         super().__init__()
 
-        # skip connection of U-ViT
-        self.skip_linear = (
-            nn.Linear(
-                hidden_dim * 2,
-                hidden_dim,
-                bias=True,
-            )
-            if has_skip_connection
-            else nn.Identity()
-        )
+        # skip connection
+        self.skip_merge = LerpMerge() if has_skip_connection else nn.Identity()
 
         self.norm1 = FP32RMSNorm(hidden_dim, eps=1e-6)
         self.attn = (
@@ -168,8 +182,9 @@ class UJiTBlock(nn.Module):
     ):
         # skip connection
         if skip_hidden_states is not None:
-            hidden_states = self.skip_linear(
-                torch.cat([hidden_states, skip_hidden_states], dim=-1)
+            hidden_states = self.skip_merge(
+                hidden_states,
+                skip_hidden_states,
             )
 
         # attn
@@ -333,32 +348,8 @@ class UJiT(JiT):
             # PoPE bias
             if isinstance(m, PopeAttention):
                 nn.init.zeros_(m.pope_bias)
-
-        # U-JiT specific initialization
-        for block in self.out_blocks:
-            if hasattr(block, "skip_linear") and isinstance(
-                block.skip_linear, nn.Linear
-            ):
-                # Init skip_linear as identity for main path, zero for skip path
-                # weight: [hidden_dim, 2 * hidden_dim]
-                # bias: [hidden_dim]
-                nn.init.zeros_(block.skip_linear.bias)
-                nn.init.zeros_(block.skip_linear.weight)
-
-                hidden_dim = block.skip_linear.weight.shape[0]
-                # The first hidden_dim columns correspond to the main path (hidden_states)
-                # The second hidden_dim columns correspond to the skip path (skip_hidden_states)
-
-                # Set main path to identity
-                block.skip_linear.weight.data[:, :hidden_dim] = torch.eye(hidden_dim)
-
-        # Zero-init output projections for better gradient flow at init
-        # This makes each block an identity function initially
-        for block in [*self.in_blocks, self.mid_block, *self.out_blocks]:
-            nn.init.zeros_(block.attn.to_o.weight)
-            nn.init.zeros_(block.attn.to_o.bias)
-            nn.init.zeros_(block.mlp.w_3.weight)
-            nn.init.zeros_(block.mlp.w_3.bias)
+            elif isinstance(m, LerpMerge):
+                m.init_weights()
 
     def forward_block(
         self,
