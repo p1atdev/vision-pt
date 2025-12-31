@@ -124,6 +124,8 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
         total_loss = l2_loss
 
         if len(self.model_config.lowres_loss) > 0:
+            self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
+
             for idx, scale in enumerate(self.model_config.lowres_loss):
                 if scale <= 0.0:
                     continue
@@ -132,13 +134,12 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
                     return F.interpolate(
                         x,
                         scale_factor=scale,
-                        mode="nearest",
-                        align_corners=False,
+                        mode="area",
                     )
 
                 # downsample images to the target scale
                 lowres_l2_loss = self.treat_loss(
-                    model_pred=rescale(images),
+                    model_pred=rescale(model_pred),
                     noisy_image=rescale(noisy_image),
                     clean_image=rescale(images),
                     random_noise=rescale(_random_noise),  # only for v-pred
