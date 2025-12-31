@@ -13,7 +13,7 @@ WIP
 
 ## Models
 
-- [ ] JiT
+- [x] JiT
 
 
 ## References
