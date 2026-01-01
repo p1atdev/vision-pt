@@ -18,12 +18,64 @@ from ..denoiser import (
     FinalLayer,
     BottleneckFinalLayer,
     JiT,
+    apply_rope,
 )
 from ..pipeline import JiTModel
 from ..config import DenoiserConfig, JiTConfig
 from .pope import PopeEmbedder, apply_pope
 
 PositionalEncoding = Literal["rope", "pope"]
+
+
+class CrossAttention(Attention):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: torch.Tensor,
+        rope_freqs: torch.Tensor,
+        mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
+    ) -> torch.Tensor:
+        batch_size, seq_len, _dim = hidden_states.shape
+
+        # QKV
+        q = self.to_q(hidden_states)
+        k = self.to_k(key_value_states)
+        v = self.to_v(key_value_states)
+
+        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
+        k = self._pre_attn_reshape(k)
+        v = self._pre_attn_reshape(v)
+
+        # QKNorm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        q = apply_rope(q, rope_freqs)
+        k = apply_rope(k, rope_freqs)
+
+        if mask is not None:
+            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
+            mask = (
+                mask.bool()
+                .view(batch_size, 1, 1, seq_len)
+                .expand(-1, self.num_heads, seq_len, -1)
+            )
+
+        attn = scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout=self.attn_dropout.p if self.training else 0.0,
+            mask=mask,
+            is_causal=False,
+        ).to(hidden_states.dtype)
+        attn = self._post_attn_reshape(attn)
+
+        # output
+        out = self.to_o(attn)
+        out = self.proj_dropout(out)
+
+        return out
 
 
 class PopeAttention(Attention):
@@ -102,6 +154,61 @@ class PopeAttention(Attention):
         return out
 
 
+class PopeCrossAttention(PopeAttention):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: torch.Tensor,
+        rope_freqs: torch.Tensor,
+        mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
+    ) -> torch.Tensor:
+        batch_size, seq_len, _dim = hidden_states.shape
+
+        # QKV
+        q = self.to_q(hidden_states)
+        k = self.to_k(key_value_states)
+        v = self.to_v(key_value_states)
+
+        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
+        k = self._pre_attn_reshape(k)
+        v = self._pre_attn_reshape(v)
+
+        # QKNorm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        q = apply_pope(q, rope_freqs)
+        k = apply_pope(
+            k,
+            rope_freqs,
+            learned_bias=self.pope_bias.clamp(-torch.pi, torch.pi),
+        )  # apply learned bias to K only
+
+        if mask is not None:
+            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
+            mask = (
+                mask.bool()
+                .view(batch_size, 1, 1, seq_len)
+                .expand(-1, self.num_heads, seq_len, -1)
+            )
+
+        attn = scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout=self.attn_dropout.p if self.training else 0.0,
+            mask=mask,
+            is_causal=False,
+        ).to(hidden_states.dtype)
+        attn = self._post_attn_reshape(attn)
+
+        # output
+        out = self.to_o(attn)
+        out = self.proj_dropout(out)
+
+        return out
+
+
 class UJiTBlock(nn.Module):
     def __init__(
         self,
@@ -119,16 +226,34 @@ class UJiTBlock(nn.Module):
     ):
         super().__init__()
 
-        # skip connection
-        self.skip_merge = (
-            nn.Linear(
+        if has_skip_connection:
+            self.norm_skip_kv = FP32RMSNorm(
                 hidden_dim,
-                hidden_dim,
-                bias=bias,
+                eps=1e-6,
             )
-            if has_skip_connection
-            else nn.Identity()
-        )
+            self.norm_skip_q = FP32RMSNorm(
+                hidden_dim,
+                eps=1e-6,
+            )
+            self.attn_skip = (
+                PopeCrossAttention(
+                    dim=hidden_dim,
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    qk_norm=qk_norm,
+                    attn_dropout=attn_dropout,
+                    proj_dropout=proj_dropout,
+                )
+                if positional_encoding == "pope"
+                else CrossAttention(
+                    dim=hidden_dim,
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    qk_norm=qk_norm,
+                    attn_dropout=attn_dropout,
+                    proj_dropout=proj_dropout,
+                )
+            )
 
         self.norm1 = FP32RMSNorm(hidden_dim, eps=1e-6)
         self.attn = (
@@ -166,10 +291,13 @@ class UJiTBlock(nn.Module):
         skip_hidden_states: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ):
-        # skip connection
+        # skip cross attention
         if skip_hidden_states is not None:
-            hidden_states = hidden_states + self.skip_merge(
-                skip_hidden_states,
+            hidden_states = hidden_states + self.attn_skip(
+                hidden_states=self.norm_skip_q(hidden_states),
+                key_value_states=self.norm_skip_kv(skip_hidden_states),
+                rope_freqs=rope_freqs,
+                mask=mask,
             )
 
         # attn
@@ -187,6 +315,8 @@ class UJiTBlock(nn.Module):
 
 class UJiTDenoiserConfig(DenoiserConfig):
     positional_encoding: PositionalEncoding = "rope"
+
+    num_blocks: int = 12
 
 
 class UJiT(JiT):
@@ -333,10 +463,6 @@ class UJiT(JiT):
             # PoPE bias
             if isinstance(m, PopeAttention):
                 nn.init.zeros_(m.pope_bias)
-            elif isinstance(m, UJiTBlock):
-                if isinstance(m.skip_merge, nn.Linear):
-                    nn.init.zeros_(m.skip_merge.weight)
-                    nn.init.zeros_(m.skip_merge.bias)
 
     def forward_block(
         self,
