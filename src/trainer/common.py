@@ -464,6 +464,16 @@ class Trainer:
     def _log_metadata(self):
         # learning rate
         for i, param_group in enumerate(self.optimizer.param_groups):
-            self.raw_model.log(
-                f"lr/group_{i}", param_group["lr"], on_step=True, on_epoch=False
-            )
+            if scheduled_lr := param_group["scheduled_lr"]:
+                # support schedulefree optimizers
+                # ref: https://zenn.dev/dena/articles/6f04641801b387#fn-90a3-6
+                self.raw_model.log(
+                    f"lr/group_{i}",
+                    scheduled_lr,
+                    on_step=True,
+                    on_epoch=False,
+                )
+            else:
+                self.raw_model.log(
+                    f"lr/group_{i}", param_group["lr"], on_step=True, on_epoch=False
+                )
