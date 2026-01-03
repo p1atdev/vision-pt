@@ -7,10 +7,11 @@ import torch.utils.checkpoint as checkpoint
 
 import torch.nn.functional as F
 
-from .config import DenoiserConfig
+from .config import DenoiserConfig, PositionalEncoding
 from ...modules.norm import FP32RMSNorm
 from ...modules.attention import scaled_dot_product_attention
 from ...modules.timestep.embedding import get_timestep_embedding
+from .extension.pope import PopeEmbedder, apply_pope
 
 
 class BottleneckPatchEmbed(nn.Module):
@@ -233,14 +234,15 @@ class Attention(nn.Module):
         qk_norm: bool = True,
         attn_dropout: float = 0.0,
         proj_dropout: float = 0.0,
+        eps: float = 1e-5,
     ):
         super().__init__()
 
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.q_norm = FP32RMSNorm(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = FP32RMSNorm(self.head_dim) if qk_norm else nn.Identity()
+        self.q_norm = FP32RMSNorm(self.head_dim, eps=eps) if qk_norm else nn.Identity()
+        self.k_norm = FP32RMSNorm(self.head_dim, eps=eps) if qk_norm else nn.Identity()
 
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_k = nn.Linear(dim, dim, bias=qkv_bias)
@@ -324,6 +326,84 @@ class Attention(nn.Module):
         return out
 
 
+class PopeAttention(Attention):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        qk_norm: bool = True,
+        attn_dropout: float = 0.0,
+        proj_dropout: float = 0.0,
+        eps: float = 1e-5,
+    ):
+        super().__init__(
+            dim=dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            attn_dropout=attn_dropout,
+            proj_dropout=proj_dropout,
+            eps=eps,
+        )
+
+        self.pope_bias = nn.Parameter(
+            torch.zeros((num_heads, self.head_dim))
+        )  # (num_heads, head_dim)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        rope_freqs: torch.Tensor,
+        mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
+    ) -> torch.Tensor:
+        batch_size, seq_len, _dim = hidden_states.shape
+
+        # QKV
+        q = self.to_q(hidden_states)
+        k = self.to_k(hidden_states)
+        v = self.to_v(hidden_states)
+
+        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
+        k = self._pre_attn_reshape(k)
+        v = self._pre_attn_reshape(v)
+
+        # QKNorm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        q = apply_pope(q, rope_freqs)
+        k = apply_pope(
+            k,
+            rope_freqs,
+            learned_bias=self.pope_bias.clamp(-torch.pi, torch.pi),
+        )  # apply learned bias to K only
+
+        if mask is not None:
+            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
+            mask = (
+                mask.bool()
+                .view(batch_size, 1, 1, seq_len)
+                .expand(-1, self.num_heads, seq_len, -1)
+            )
+
+        attn = scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout=self.attn_dropout.p if self.training else 0.0,
+            mask=mask,
+            is_causal=False,
+        ).to(hidden_states.dtype)
+        attn = self._post_attn_reshape(attn)
+
+        # output
+        out = self.to_o(attn)
+        out = self.proj_dropout(out)
+
+        return out
+
+
 class SwiGLU(nn.Module):
     def __init__(
         self,
@@ -360,11 +440,11 @@ class FinalLayer(nn.Module):
         mlp_ratio: float,
         patch_size: int,
         out_channels: int,
+        eps: float = 1e-6,
     ):
         super().__init__()
 
-        self.norm_final = FP32RMSNorm(hidden_dim)
-
+        self.norm_final = FP32RMSNorm(hidden_dim, eps=eps)
         self.mlp = SwiGLU(
             dim=hidden_dim,
             hidden_dim=int(hidden_dim * mlp_ratio),
@@ -436,20 +516,35 @@ class JiTBlock(nn.Module):
         qkv_bias: bool = True,
         qk_norm: bool = True,
         bias: bool = True,
+        eps: float = 1e-5,
+        positional_encoding: PositionalEncoding = "rope",
     ):
         super().__init__()
 
-        self.norm1 = FP32RMSNorm(hidden_dim, eps=1e-6)
-        self.attn = Attention(
-            dim=hidden_dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            attn_dropout=attn_dropout,
-            proj_dropout=proj_dropout,
+        self.norm1 = FP32RMSNorm(hidden_dim, eps=eps)
+        self.attn = (
+            PopeAttention(
+                dim=hidden_dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                attn_dropout=attn_dropout,
+                proj_dropout=proj_dropout,
+                eps=eps,
+            )
+            if positional_encoding == "pope"
+            else Attention(
+                dim=hidden_dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                attn_dropout=attn_dropout,
+                proj_dropout=proj_dropout,
+                eps=eps,
+            )
         )
 
-        self.norm2 = FP32RMSNorm(hidden_dim)
+        self.norm2 = FP32RMSNorm(hidden_dim, eps=eps)
         self.mlp = SwiGLU(
             dim=hidden_dim,
             hidden_dim=int(hidden_dim * mlp_ratio),
@@ -519,11 +614,24 @@ class JiT(nn.Module):
         )
 
         # RoPE embedder
-        self.rope_embedder = RopeEmbedder(
-            rope_theta=config.rope_theta,
-            axes_dims=config.rope_axes_dims,
-            axes_lens=config.rope_axes_lens,
-        )
+        if config.positional_encoding == "rope":
+            self.rope_embedder = RopeEmbedder(
+                rope_theta=config.rope_theta,
+                axes_dims=config.rope_axes_dims,
+                axes_lens=config.rope_axes_lens,
+                zero_centered=config.rope_zero_centered,
+            )
+        elif config.positional_encoding == "pope":
+            self.rope_embedder = PopeEmbedder(
+                pope_theta=config.rope_theta,
+                axes_dims=config.rope_axes_dims,
+                axes_lens=config.rope_axes_lens,
+                zero_centered=config.rope_zero_centered,
+            )
+        else:
+            raise ValueError(
+                f"Unknown positional_encoding: {config.positional_encoding}"
+            )
 
         # class condition or text embedding
         self.context_embedder = nn.Linear(
@@ -544,6 +652,8 @@ class JiT(nn.Module):
                     qkv_bias=True,
                     qk_norm=True,
                     bias=True,
+                    eps=1e-5,
+                    positional_encoding=config.positional_encoding,
                 )
                 for _ in range(config.depth)
             ]
@@ -562,6 +672,7 @@ class JiT(nn.Module):
                 mlp_ratio=config.mlp_ratio,
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
+                eps=1e-6,
             )
         )
 
@@ -601,15 +712,6 @@ class JiT(nn.Module):
             self.time_embedder.mlp[2].weight,  # type: ignore
             std=0.02,
         )
-
-        # # Zero-init output projections for better gradient flow at init
-        # # This makes each block an identity function initially
-        # for m in self.modules():
-        #     if isinstance(m, JiTBlock):
-        #         nn.init.zeros_(m.attn.to_o.weight)
-        #         nn.init.zeros_(m.attn.to_o.bias)
-        #         nn.init.zeros_(m.mlp.w_3.weight)
-        #         nn.init.zeros_(m.mlp.w_3.bias)
 
     def set_gradient_checkpointing(self, enable: bool = True):
         self.gradient_checkpointing = enable

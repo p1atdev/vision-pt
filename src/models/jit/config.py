@@ -9,6 +9,8 @@ from ...utils.dtype import str_to_dtype
 # from ...modules.attention import AttentionImplementation
 from ...modules.loss.flow_match import ModelPredictionType
 
+PositionalEncoding = Literal["rope", "pope"]
+
 
 class DenoiserConfig(BaseModel):
     patch_size: int = 16
@@ -28,6 +30,7 @@ class DenoiserConfig(BaseModel):
     num_time_tokens: int = 4
     timestep_scale: float = 1.0  # or 1000.0 like diffusion
 
+    positional_encoding: PositionalEncoding = "rope"
     rope_theta: float = 256.0
     rope_axes_dims: list[int] = [16, 24, 24]
     rope_axes_lens: list[int] = [256, 128, 128]
