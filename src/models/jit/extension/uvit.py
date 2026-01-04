@@ -250,7 +250,6 @@ class UJiTBlock(nn.Module):
 class UJiTDenoiserConfig(DenoiserConfig):
     num_blocks: int = 12
 
-    norm_type: NormType = "rms"
     norm_position: NormPosition = "sandwich"
 
 

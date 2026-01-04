@@ -345,6 +345,7 @@ class PopeAttention(Attention):
         attn_dropout: float = 0.0,
         proj_dropout: float = 0.0,
         eps: float = 1e-6,
+        norm_type: NormType = "rms",
     ):
         super().__init__(
             dim=dim,
@@ -354,6 +355,7 @@ class PopeAttention(Attention):
             attn_dropout=attn_dropout,
             proj_dropout=proj_dropout,
             eps=eps,
+            norm_type=norm_type,
         )
 
         self.pope_bias = nn.Parameter(
@@ -543,6 +545,7 @@ class JiTBlock(nn.Module):
                 attn_dropout=attn_dropout,
                 proj_dropout=proj_dropout,
                 eps=eps,
+                norm_type=norm_type,
             )
             if positional_encoding == "pope"
             else Attention(
@@ -553,6 +556,7 @@ class JiTBlock(nn.Module):
                 attn_dropout=attn_dropout,
                 proj_dropout=proj_dropout,
                 eps=eps,
+                norm_type=norm_type,
             )
         )
 
@@ -666,6 +670,7 @@ class JiT(nn.Module):
                     bias=True,
                     eps=1e-5,
                     positional_encoding=config.positional_encoding,
+                    norm_type=config.norm_type,
                 )
                 for _ in range(config.depth)
             ]
@@ -677,6 +682,7 @@ class JiT(nn.Module):
                 bottleneck_dim=config.bottleneck_dim,
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
+                norm_type=config.norm_type,
             )
             if self.config.use_output_bottleneck
             else FinalLayer(
@@ -685,6 +691,7 @@ class JiT(nn.Module):
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
                 eps=1e-6,
+                norm_type=config.norm_type,
             )
         )
 
@@ -696,6 +703,10 @@ class JiT(nn.Module):
             if isinstance(m, nn.Linear):
                 # nn.init.xavier_uniform_(m.weight)
                 nn.init.normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.RMSNorm):

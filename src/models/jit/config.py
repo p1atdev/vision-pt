@@ -8,6 +8,7 @@ from ...utils.dtype import str_to_dtype
 
 # from ...modules.attention import AttentionImplementation
 from ...modules.loss.flow_match import ModelPredictionType
+from ...modules.norm import NormType
 
 PositionalEncoding = Literal["rope", "pope"]
 
@@ -26,6 +27,8 @@ class DenoiserConfig(BaseModel):
     bottleneck_dim: int = 128
     use_output_bottleneck: bool = False
     use_pixel_shuffle: bool = False
+
+    norm_type: NormType = "rms"
 
     num_time_tokens: int = 4
     timestep_scale: float = 1.0  # or 1000.0 like diffusion
