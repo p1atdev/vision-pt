@@ -8,7 +8,7 @@ import torch.utils.checkpoint as checkpoint
 import torch.nn.functional as F
 
 from .config import DenoiserConfig, PositionalEncoding
-from ...modules.norm import FP32RMSNorm
+from ...modules.norm import get_norm_layer, NormType, DyTNrom, DerfNorm
 from ...modules.attention import scaled_dot_product_attention
 from ...modules.timestep.embedding import get_timestep_embedding
 from .extension.pope import PopeEmbedder, apply_pope
@@ -234,15 +234,24 @@ class Attention(nn.Module):
         qk_norm: bool = True,
         attn_dropout: float = 0.0,
         proj_dropout: float = 0.0,
-        eps: float = 1e-5,
+        eps: float = 1e-6,
+        norm_type: NormType = "rms",
     ):
         super().__init__()
 
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.q_norm = FP32RMSNorm(self.head_dim, eps=eps) if qk_norm else nn.Identity()
-        self.k_norm = FP32RMSNorm(self.head_dim, eps=eps) if qk_norm else nn.Identity()
+        self.q_norm = (
+            get_norm_layer(norm_type, self.head_dim, eps=eps)
+            if qk_norm
+            else nn.Identity()
+        )
+        self.k_norm = (
+            get_norm_layer(norm_type, self.head_dim, eps=eps)
+            if qk_norm
+            else nn.Identity()
+        )
 
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_k = nn.Linear(dim, dim, bias=qkv_bias)
@@ -335,7 +344,7 @@ class PopeAttention(Attention):
         qk_norm: bool = True,
         attn_dropout: float = 0.0,
         proj_dropout: float = 0.0,
-        eps: float = 1e-5,
+        eps: float = 1e-6,
     ):
         super().__init__(
             dim=dim,
@@ -441,10 +450,11 @@ class FinalLayer(nn.Module):
         patch_size: int,
         out_channels: int,
         eps: float = 1e-6,
+        norm_type: NormType = "rms",
     ):
         super().__init__()
 
-        self.norm_final = FP32RMSNorm(hidden_dim, eps=eps)
+        self.norm_final = get_norm_layer(norm_type, hidden_dim, eps=eps)
         self.mlp = SwiGLU(
             dim=hidden_dim,
             hidden_dim=int(hidden_dim * mlp_ratio),
@@ -476,10 +486,11 @@ class BottleneckFinalLayer(nn.Module):
         bottleneck_dim: int,
         patch_size: int,
         out_channels: int,
+        norm_type: NormType = "rms",
     ):
         super().__init__()
 
-        self.norm_final = FP32RMSNorm(hidden_dim)
+        self.norm_final = get_norm_layer(norm_type, hidden_dim, eps=1e-6)
 
         self.proj_1 = nn.Linear(
             hidden_dim,
@@ -516,12 +527,13 @@ class JiTBlock(nn.Module):
         qkv_bias: bool = True,
         qk_norm: bool = True,
         bias: bool = True,
-        eps: float = 1e-5,
+        eps: float = 1e-6,
         positional_encoding: PositionalEncoding = "rope",
+        norm_type: NormType = "rms",
     ):
         super().__init__()
 
-        self.norm1 = FP32RMSNorm(hidden_dim, eps=eps)
+        self.norm1 = get_norm_layer(norm_type, hidden_dim, eps=eps)
         self.attn = (
             PopeAttention(
                 dim=hidden_dim,
@@ -544,7 +556,7 @@ class JiTBlock(nn.Module):
             )
         )
 
-        self.norm2 = FP32RMSNorm(hidden_dim, eps=eps)
+        self.norm2 = get_norm_layer(norm_type, hidden_dim, eps=eps)
         self.mlp = SwiGLU(
             dim=hidden_dim,
             hidden_dim=int(hidden_dim * mlp_ratio),
@@ -688,6 +700,10 @@ class JiT(nn.Module):
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.RMSNorm):
                 nn.init.ones_(m.weight)
+            elif isinstance(m, DyTNrom):
+                m.init_weights()
+            elif isinstance(m, DerfNorm):
+                m.init_weights()
 
         # patch embed
         w_1 = self.patch_embedder.proj_1.weight

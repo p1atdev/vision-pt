@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import NamedTuple, Literal
 
 
 import torch
@@ -88,3 +88,128 @@ class SingleAdaLayerNormZero(nn.Module):
             shift=shift,
             gate=gate,  # will be used later
         )
+
+
+# ref: https://github.com/jiachenzhu/DyT/blob/main/other_tasks/DiT/dynamic_tanh.py
+class DyTNrom(nn.Module):
+    def __init__(
+        self,
+        normalized_shape: int,
+        elementwise_affine: bool = True,
+        alpha_init_value: float = 0.5,
+    ):
+        super().__init__()
+
+        self.normalized_shape = normalized_shape
+        self.elementwise_affine = elementwise_affine
+        self.alpha_init_value = alpha_init_value
+
+        self.alpha = nn.Parameter(torch.ones(1) * self.alpha_init_value)
+
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(normalized_shape))
+            self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        else:
+            self.weight = None
+            self.bias = None
+
+    def init_weights(self) -> None:
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)  # type: ignore
+            nn.init.zeros_(self.bias)  # type: ignore
+
+        nn.init.constant_(self.alpha, self.alpha_init_value)
+
+    @torch.compile
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.elementwise_affine:
+            # weight and bias are not none here
+            return torch.tanh(self.alpha * input) * self.weight + self.bias  # type: ignore
+        else:
+            return torch.tanh(self.alpha * input)
+
+
+# https://github.com/zlab-princeton/Derf/blob/main/DiT/dynamic_erf.py
+class DerfNorm(nn.Module):
+    def __init__(
+        self,
+        normalized_shape: int,
+        elementwise_affine: bool = True,
+        alpha_init_value: float = 0.5,
+        shift_init_value: float = 0.0,
+    ):
+        super().__init__()
+
+        self.normalized_shape = normalized_shape
+        self.elementwise_affine = elementwise_affine
+        self.alpha_init_value = alpha_init_value
+        self.shift_init_value = shift_init_value
+
+        self.alpha = nn.Parameter(torch.ones(1) * self.alpha_init_value)
+        if elementwise_affine:
+            self.weight = nn.Parameter(torch.ones(normalized_shape))
+            self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        else:
+            self.weight = None
+            self.bias = None
+        self.shift = nn.Parameter(torch.ones(1) * self.shift_init_value)
+
+    def init_weights(self) -> None:
+        if self.elementwise_affine:
+            nn.init.ones_(self.weight)  # type: ignore
+            nn.init.zeros_(self.bias)  # type: ignore
+
+        nn.init.constant_(self.alpha, self.alpha_init_value)
+        nn.init.constant_(self.shift, self.shift_init_value)
+
+    @torch.compile
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        input = self.alpha * input + self.shift
+
+        if self.elementwise_affine:
+            # weight and bias are not none here
+            return torch.erf(input) * self.weight + self.bias  # type: ignore
+        else:
+            return torch.erf(input)
+
+
+NormType = Literal["layer", "rms", "dyt", "derf"]
+
+
+def get_norm_layer(
+    norm_type: NormType,
+    normalized_shape: int,
+    elementwise_affine: bool = True,
+    eps: float = 1e-6,
+    alpha_init_value: float = 0.5,
+    shift_init_value: float = 0.0,
+) -> nn.Module:
+    if norm_type == "layer":
+        norm_layer = FP32LayerNorm(
+            normalized_shape,
+            elementwise_affine=elementwise_affine,
+            eps=eps,
+        )
+    elif norm_type == "rms":
+        norm_layer = FP32RMSNorm(
+            normalized_shape,
+            elementwise_affine=elementwise_affine,
+            eps=eps,
+        )
+    elif norm_type == "dyt":
+        norm_layer = DyTNrom(
+            normalized_shape,
+            elementwise_affine=elementwise_affine,
+            alpha_init_value=alpha_init_value,
+        )
+    elif norm_type == "derf":
+        norm_layer = DerfNorm(
+            normalized_shape,
+            elementwise_affine=elementwise_affine,
+            alpha_init_value=alpha_init_value,
+            shift_init_value=shift_init_value,
+        )
+    else:
+        raise ValueError(f"Unsupported norm type: {norm_type}")
+
+    return norm_layer

@@ -1,12 +1,14 @@
 # ref: https://arxiv.org/pdf/2209.12152
 # https://github.com/baofff/U-ViT
 
+from typing import Literal
+
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 
 
-from ....modules.norm import FP32RMSNorm
+from ....modules.norm import NormType, get_norm_layer
 from ....modules.attention import scaled_dot_product_attention
 from ..denoiser import (
     Attention,
@@ -23,6 +25,8 @@ from ..denoiser import (
 from ..pipeline import JiTModel
 from ..config import DenoiserConfig, JiTConfig, PositionalEncoding
 from .pope import PopeEmbedder, apply_pope
+
+NormPosition = Literal["pre", "post", "sandwich"]
 
 
 class CrossAttention(Attention):
@@ -144,9 +148,15 @@ class UJiTBlock(nn.Module):
         qk_norm: bool = True,
         bias: bool = True,
         has_skip_connection: bool = False,
+        eps: float = 1e-6,
         positional_encoding: PositionalEncoding = "rope",
+        norm_type: NormType = "rms",
+        norm_position: NormPosition = "sandwich",
     ):
         super().__init__()
+
+        self.has_pre_norm = norm_position == "pre" or norm_position == "sandwich"
+        self.has_post_norm = norm_position == "post" or norm_position == "sandwich"
 
         if has_skip_connection:
             # concat skip
@@ -156,7 +166,15 @@ class UJiTBlock(nn.Module):
                 bias=bias,
             )
 
-        self.norm_attn_pre = FP32RMSNorm(hidden_dim, eps=1e-6)
+        if norm_position == "pre" or norm_position == "sandwich":
+            self.norm_attn_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
+        else:
+            self.norm_attn_pre = nn.Identity()
+        if norm_position == "post" or norm_position == "sandwich":
+            self.norm_attn_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
+        else:
+            self.norm_attn_post = nn.Identity()
+
         self.attn = (
             PopeAttention(
                 dim=hidden_dim,
@@ -176,16 +194,22 @@ class UJiTBlock(nn.Module):
                 proj_dropout=proj_dropout,
             )
         )
-        self.norm_attn_post = FP32RMSNorm(hidden_dim)
 
-        self.norm_mlp_pre = FP32RMSNorm(hidden_dim)
+        if norm_position == "pre" or norm_position == "sandwich":
+            self.norm_mlp_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
+        else:
+            self.norm_mlp_pre = nn.Identity()
+        if norm_position == "post" or norm_position == "sandwich":
+            self.norm_mlp_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
+        else:
+            self.norm_mlp_post = nn.Identity()
+
         self.mlp = SwiGLU(
             dim=hidden_dim,
             hidden_dim=int(hidden_dim * mlp_ratio),
             dropout=ffn_dropout,
             bias=bias,
         )
-        self.norm_mlp_post = FP32RMSNorm(hidden_dim)
 
     def forward(
         self,
@@ -225,6 +249,9 @@ class UJiTBlock(nn.Module):
 
 class UJiTDenoiserConfig(DenoiserConfig):
     num_blocks: int = 12
+
+    norm_type: NormType = "rms"
+    norm_position: NormPosition = "sandwich"
 
 
 class UJiT(JiT):
@@ -313,7 +340,10 @@ class UJiT(JiT):
                     qk_norm=True,
                     bias=True,
                     has_skip_connection=False,
+                    eps=1e-6,
                     positional_encoding=config.positional_encoding,
+                    norm_type=config.norm_type,
+                    norm_position=config.norm_position,
                 )
                 for _ in range(config.depth)
             ]
@@ -329,7 +359,10 @@ class UJiT(JiT):
             qk_norm=True,
             bias=True,
             has_skip_connection=False,
+            eps=1e-6,
             positional_encoding=config.positional_encoding,
+            norm_type=config.norm_type,
+            norm_position=config.norm_position,
         )
         self.up_blocks = nn.ModuleList(
             [
@@ -344,7 +377,10 @@ class UJiT(JiT):
                     qk_norm=True,
                     bias=True,
                     has_skip_connection=True,  # U-JiT skip connection
+                    eps=1e-6,
                     positional_encoding=config.positional_encoding,
+                    norm_type=config.norm_type,
+                    norm_position=config.norm_position,
                 )
                 for _ in range(config.depth)
             ]
@@ -363,7 +399,10 @@ class UJiT(JiT):
                     qk_norm=True,
                     bias=True,
                     has_skip_connection=False,  # no skip connection
+                    eps=1e-6,
                     positional_encoding=config.positional_encoding,
+                    norm_type=config.norm_type,
+                    norm_position=config.norm_position,
                 )
                 for _ in range(num_out_blocks)
             ]
