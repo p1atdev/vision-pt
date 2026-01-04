@@ -682,7 +682,8 @@ class JiT(nn.Module):
                 bottleneck_dim=config.bottleneck_dim,
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
-                norm_type=config.norm_type,
+                # Final norm should be RMSNorm for better performance
+                norm_type="rms",
             )
             if self.config.use_output_bottleneck
             else FinalLayer(
@@ -691,7 +692,8 @@ class JiT(nn.Module):
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
                 eps=1e-6,
-                norm_type=config.norm_type,
+                # Final norm should be RMSNorm for better performance
+                norm_type="rms",
             )
         )
 

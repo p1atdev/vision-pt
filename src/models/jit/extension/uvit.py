@@ -183,6 +183,7 @@ class UJiTBlock(nn.Module):
                 qk_norm=qk_norm,
                 attn_dropout=attn_dropout,
                 proj_dropout=proj_dropout,
+                norm_type="rms",
             )
             if positional_encoding == "pope"
             else Attention(
@@ -192,6 +193,7 @@ class UJiTBlock(nn.Module):
                 qk_norm=qk_norm,
                 attn_dropout=attn_dropout,
                 proj_dropout=proj_dropout,
+                norm_type="rms",
             )
         )
 
@@ -413,6 +415,8 @@ class UJiT(JiT):
                 bottleneck_dim=config.bottleneck_dim,
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
+                # Final norm should be RMSNorm for better performance
+                norm_type="rms",
             )
             if self.config.use_output_bottleneck
             else FinalLayer(
@@ -420,6 +424,8 @@ class UJiT(JiT):
                 mlp_ratio=config.mlp_ratio,
                 patch_size=config.patch_size,
                 out_channels=config.in_channels,
+                # Final norm should be RMSNorm for better performance
+                norm_type="rms",
             )
         )
 
