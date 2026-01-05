@@ -15,6 +15,7 @@ PerceptualLossType = Literal["lpips", "dists"]
 
 class AbstractPerceptualLossConfig(BaseModel, ABC):
     type: PerceptualLossType
+    weight: float = 1.0
 
     # to make hashable
     def __hash__(self) -> int:
@@ -75,8 +76,10 @@ class PerceptualLoss(nn.Module):
 
         for loss_config in self.loss_configs:
             loss_type = loss_config.type
+            weight = loss_config.weight
+
             metric = self.metrics[loss_type]
             loss = metric(pred, target)
-            losses[loss_type] = loss
+            losses[loss_type] = loss * weight
 
         return losses
