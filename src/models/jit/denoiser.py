@@ -668,7 +668,7 @@ class JiT(nn.Module):
                     qkv_bias=True,
                     qk_norm=True,
                     bias=True,
-                    eps=1e-5,
+                    eps=1e-6,
                     positional_encoding=config.positional_encoding,
                     norm_type=config.norm_type,
                 )
@@ -717,6 +717,8 @@ class JiT(nn.Module):
                 m.init_weights()
             elif isinstance(m, DerfNorm):
                 m.init_weights()
+            elif isinstance(m, PopeAttention):
+                nn.init.zeros_(m.pope_bias)
 
         # patch embed
         w_1 = self.patch_embedder.proj_1.weight
@@ -917,6 +919,7 @@ class JiT(nn.Module):
                 tokens,
                 freqs_cis,
                 mask,
+                use_reentrant=False,
             )
         else:
             tokens = block(
