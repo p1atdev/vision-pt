@@ -15,7 +15,10 @@ from src.modules.loss.flow_match import (
     prepare_scaled_noised_latents,
 )
 from src.modules.timestep import sample_timestep
-
+from src.modules.loss.perceptual import (
+    PerceptualLossConfig,
+    PerceptualLoss,
+)
 
 from class_to_image import JiTForClassToImageTraining
 
@@ -35,10 +38,15 @@ class UJiTConfigForTraining(UJiTConfig):
     drop_context_rate: float = 0.1  # for classifier-free guidance
 
     lowres_loss: list[float] = []  # e.g., [0.5, 0.25] for 1/2 and 1/4 resolutions
+    perceptual_losses: set[PerceptualLossConfig] = set()
 
     @property
     def is_from_scratch(self) -> bool:
         return self.checkpoint_path is None
+
+    @property
+    def has_additional_losses(self) -> bool:
+        return (len(self.lowres_loss) + len(self.perceptual_losses)) > 0
 
 
 class UJiTForClassToImageTraining(JiTForClassToImageTraining):
@@ -47,6 +55,15 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
 
     model_config: UJiTConfigForTraining
     model_config_class = UJiTConfigForTraining
+
+    def setup_model(self):
+        super().setup_model()
+
+        if self.accelerator.is_main_process:
+            self.perceptual_loss_module = PerceptualLoss(
+                loss_configs=list(self.model_config.perceptual_losses),
+                convert_zero_to_one=True,
+            ).to(self.accelerator.device)
 
     def train_step(self, batch: dict) -> torch.Tensor:
         images: torch.Tensor = batch["image"]
@@ -123,9 +140,10 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
 
         total_loss = l2_loss
 
-        if len(self.model_config.lowres_loss) > 0:
+        if self.model_config.has_additional_losses:
             self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
 
+        if len(self.model_config.lowres_loss) > 0:
             for idx, scale in enumerate(self.model_config.lowres_loss):
                 if scale <= 0.0:
                     continue
@@ -153,6 +171,20 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
                 )
 
                 total_loss = total_loss + lowres_l2_loss
+
+        if len(self.model_config.perceptual_losses) > 0:
+            perceptual_loss = self.perceptual_loss_module(
+                pred=model_pred,
+                target=images,
+            )
+            for metric_name, metric_loss in perceptual_loss.items():
+                self.log(
+                    f"train/{metric_name}_loss",
+                    metric_loss,
+                    on_step=True,
+                    on_epoch=True,
+                )
+                total_loss = total_loss + metric_loss
 
         self.log("train/loss", total_loss, on_step=True, on_epoch=True)
 
