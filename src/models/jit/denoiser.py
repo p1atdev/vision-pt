@@ -729,20 +729,11 @@ class JiT(nn.Module):
             nn.init.zeros_(self.patch_embedder.proj_2.bias)
 
         # time position embeds
-        nn.init.normal_(
-            self.time_position_embeds,
-            std=0.02,
-        )
-
-        # time embedder
-        nn.init.normal_(
-            self.time_embedder.mlp[0].weight,  # type: ignore
-            std=0.02,
-        )
-        nn.init.normal_(
-            self.time_embedder.mlp[2].weight,  # type: ignore
-            std=0.02,
-        )
+        if hasattr(self, "time_position_embeds"):
+            nn.init.normal_(
+                self.time_position_embeds,
+                std=0.02,
+            )
 
     def set_gradient_checkpointing(self, enable: bool = True):
         self.gradient_checkpointing = enable
