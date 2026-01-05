@@ -434,12 +434,6 @@ class UJiT(JiT):
     def initialize_weights(self):
         super().initialize_weights()
 
-        # Initialize weights
-        for m in self.modules():
-            # PoPE bias
-            if isinstance(m, PopeAttention):
-                nn.init.zeros_(m.pope_bias)
-
     def forward_block(
         self,
         block: UJiTBlock,
@@ -708,7 +702,7 @@ class UJiTModel(JiTModel):
     @classmethod
     def from_pretrained(
         cls,
-        config: JiTConfig,
+        config: UJiTConfig,
         checkpoint_path: str,
     ) -> "UJiTModel":
         return super().from_pretrained(  # type: ignore
