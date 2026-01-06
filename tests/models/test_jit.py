@@ -8,7 +8,12 @@ from src.models.jit.config import JiT_B_16_Config, JiTConfig, ClassContextConfig
 from src.models.jit.text_encoder import TextEncoder
 from src.models.jit.class_encoder import ClassEncoder
 from src.models.jit.pipeline import JiTModel
-from src.models.jit.extension.uvit import UJiTModel, Denoiser as UJiTDenoiser
+from src.models.jit.extension.uvit import (
+    UJiTModel,
+    Denoiser as UJiTDenoiser,
+    UJiTConfig,
+    UJiTDenoiserConfig,
+)
 
 
 def test_timesteps():
@@ -309,8 +314,8 @@ def test_new_jit_pipeline():
 
 @torch.no_grad()
 def test_new_ujit_pipeline():
-    config = JiTConfig(
-        denoiser=JiT_B_16_Config(
+    config = UJiTConfig(
+        denoiser=UJiTDenoiserConfig(
             context_dim=768,
             hidden_size=768,
             num_heads=12,
