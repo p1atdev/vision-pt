@@ -14,6 +14,19 @@ from src.models.jit.extension.uvit import (
     UJiTConfig,
     UJiTDenoiserConfig,
 )
+from src.models.jit.extension.pope import PopeEmbedder, NormalizedPopeEmbedder
+from src.models.jit.extension.cross import (
+    CrossJiTDenoiserConfig,
+    CrossJiTModel,
+    CrossJiTConfig,
+    Denoiser as CrossJiTDenoiser,
+)
+from src.models.jit.extension.ig import (
+    IGJiTModel,
+    IGJiTDenoiserConfig,
+    IGJiTConfig,
+    Denoiser as IGJiTDenoiser,
+)
 
 
 def test_timesteps():
@@ -392,3 +405,257 @@ def test_new_ujit_pipeline():
     )
 
     pil_images[0].save("output/test_ujit_pipeline_output.webp")
+
+
+@torch.no_grad()
+def test_pope_embedder():
+    embedder = PopeEmbedder(
+        pope_theta=256.0,
+        axes_dims=[64, 128, 128],
+        axes_lens=[256, 128, 128],
+        zero_centered=[False, True, True],
+    )
+
+    assert embedder.get_offset(0) == 0
+    assert embedder.get_offset(1) == 64
+    assert embedder.get_offset(2) == 64
+
+    num_axes = len(embedder.axes_dims)
+    assert num_axes == 3
+
+    seq_len = 50
+    num_patches = 36  # 6 * 6
+    height = 6
+    width = 6
+    num_context = seq_len - num_patches
+
+    context_position_ids = embedder.prepare_context_position_ids(
+        seq_len=num_context,
+        global_index=0,
+    )
+    image_position_ids = embedder.prepare_image_position_ids(
+        height=height,
+        width=width,
+        patch_size=1,
+        global_index=1,
+    )
+
+    position_ids = torch.cat(
+        [
+            context_position_ids,
+            image_position_ids,
+        ],
+        dim=0,
+    )
+
+    freqs_cis = embedder(position_ids=position_ids)
+
+    assert freqs_cis.shape == (1, seq_len, sum(embedder.axes_dims))
+
+
+@torch.no_grad()
+def test_normalized_pope_embedder():
+    embedder = NormalizedPopeEmbedder(
+        pope_theta=256.0,
+        axes_dims=[64, 128, 128],
+        axes_lens=[256, 128, 128],
+        zero_centered=[False, True, True],
+        normalize_by=64.0,
+    )
+
+    assert embedder.get_offset(0) == 0
+    assert embedder.get_offset(1) == 64
+    assert embedder.get_offset(2) == 64
+
+    num_axes = len(embedder.axes_dims)
+    assert num_axes == 3
+
+    seq_len = 50
+    num_patches = 36  # 6 * 6
+    height = 6
+    width = 6
+    num_context = seq_len - num_patches
+
+    context_position_ids = embedder.prepare_context_position_ids(
+        seq_len=num_context,
+        global_index=0,
+    )
+
+    image_position_ids = embedder.prepare_image_position_ids(
+        height=height,
+        width=width,
+        patch_size=1,
+        global_index=1,
+    )
+    # print("position_ids:", position_ids)
+
+    # do not embed after concat, because we can't know max position id for each group
+    freqs_cis = torch.cat(
+        [
+            embedder(position_ids=context_position_ids),
+            embedder(position_ids=image_position_ids),
+        ],
+        dim=1,
+    )
+
+    assert freqs_cis.shape == (1, seq_len, sum(embedder.axes_dims))
+
+    print(freqs_cis)
+
+
+@torch.no_grad()
+def test_cross_jit_pipeline():
+    config = CrossJiTConfig(
+        denoiser=CrossJiTDenoiserConfig(
+            context_dim=768,
+            hidden_size=768,
+            num_heads=12,
+            context_start_block=4,
+            rope_axes_dims=[16, 24, 24],
+            rope_axes_lens=[256, 128, 128],
+            rope_zero_centered=[False, True, True],
+        ),
+        context_encoder=ClassContextConfig(
+            label2id_map_path="models/jit-animeface-labels.json"
+        ),
+    )
+
+    model = CrossJiTModel.new_with_config(
+        config=config,
+    )
+
+    assert isinstance(model.denoiser, CrossJiTDenoiser)
+
+    batch_size = 2
+    height = 64
+    width = 64
+    in_channels = 3
+
+    image = torch.randn(
+        batch_size,
+        in_channels,
+        height,
+        width,
+    )
+
+    # uniform [0, 1)
+    timestep = torch.rand(batch_size)
+
+    class_prompts = [
+        "general 1girl solo looking_at_viewer",
+        "sensitive 2girls multiple_girls",
+    ]
+    embedding, attention_mask = model.class_encoder.encode_prompts(
+        prompts=class_prompts,
+        max_token_length=32,
+    )
+    original_size = torch.tensor([[height, width]]).repeat(batch_size, 1)
+    target_size = original_size.clone()
+    crop_coords = torch.tensor([[0, 0]]).repeat(batch_size, 1)
+
+    output = model.denoiser(
+        image=image,
+        timestep=timestep,
+        context=embedding,
+        context_mask=attention_mask,
+        original_size=original_size,
+        target_size=target_size,
+        crop_coords=crop_coords,
+    )
+
+    assert output.shape == image.shape
+
+    # generate image
+    model.to(device="cpu", dtype=torch.float32)
+
+    pil_images = model.generate(
+        prompt="general 1girl solo looking_at_viewer",
+        num_inference_steps=20,
+        height=160,
+        width=144,
+        seed=42,
+        cfg_scale=2.0,
+        device=torch.device("cpu"),
+        execution_dtype=torch.float32,
+    )
+    pil_images[0].save("output/test_cross_jit_pipeline_output.webp")
+
+
+@torch.no_grad()
+def test_ig_jit_pipeline():
+    config = IGJiTConfig(
+        denoiser=IGJiTDenoiserConfig(
+            context_dim=768,
+            hidden_size=768,
+            num_heads=12,
+            context_start_block=4,
+            rope_axes_dims=[16, 24, 24],
+            rope_axes_lens=[256, 128, 128],
+            rope_zero_centered=[False, True, True],
+        ),
+        context_encoder=ClassContextConfig(
+            label2id_map_path="models/jit-animeface-labels.json"
+        ),
+    )
+
+    model = IGJiTModel.new_with_config(
+        config=config,
+    )
+
+    assert isinstance(model.denoiser, IGJiTDenoiser)
+
+    batch_size = 2
+    height = 64
+    width = 64
+    in_channels = 3
+
+    image = torch.randn(
+        batch_size,
+        in_channels,
+        height,
+        width,
+    )
+
+    # uniform [0, 1)
+    timestep = torch.rand(batch_size)
+
+    class_prompts = [
+        "general 1girl solo looking_at_viewer",
+        "sensitive 2girls multiple_girls",
+    ]
+    embedding, attention_mask = model.class_encoder.encode_prompts(
+        prompts=class_prompts,
+        max_token_length=32,
+    )
+    original_size = torch.tensor([[height, width]]).repeat(batch_size, 1)
+    target_size = original_size.clone()
+    crop_coords = torch.tensor([[0, 0]]).repeat(batch_size, 1)
+
+    output, intermediate = model.denoiser(
+        image=image,
+        timestep=timestep,
+        context=embedding,
+        context_mask=attention_mask,
+        original_size=original_size,
+        target_size=target_size,
+        crop_coords=crop_coords,
+    )
+
+    assert output.shape == image.shape
+    assert intermediate.shape == image.shape
+
+    # generate image
+    model.to(device="cpu", dtype=torch.float32)
+
+    pil_images = model.generate(
+        prompt="general 1girl solo looking_at_viewer",
+        num_inference_steps=20,
+        height=160,
+        width=144,
+        seed=42,
+        cfg_scale=2.0,
+        device=torch.device("cpu"),
+        execution_dtype=torch.float32,
+    )
+
+    pil_images[0].save("output/test_ig_jit_pipeline_output.webp")
