@@ -138,8 +138,7 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
 
         total_loss = l2_loss
 
-        if self.model_config.has_additional_losses:
-            self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
+        self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
 
         if len(self.model_config.lowres_loss) > 0:
             for idx, size in enumerate(self.model_config.lowres_loss):

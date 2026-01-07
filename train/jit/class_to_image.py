@@ -234,11 +234,10 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             timesteps=timesteps,
         )
 
-        # TODO: support LPIPS loss?
-
         total_loss = l2_loss
 
         self.log("train/loss", total_loss, on_step=True, on_epoch=True)
+        self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
 
         return total_loss
 
