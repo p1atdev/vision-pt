@@ -50,6 +50,7 @@ class PopeEmbedder:
         self.axes_dims = axes_dims
         self.axes_lens = axes_lens
         self.zero_centered = zero_centered
+        self.num_axes = len(axes_dims)
 
         # text starts with 0, image axes are zero-centered
 
@@ -136,10 +137,232 @@ class PopeEmbedder:
             ) + self.get_offset(axis=i)  # adjust for zero-centered axes
             result.append(
                 torch.gather(
-                    freqs_cis[i].unsqueeze(0).repeat(index.shape[0], 1, 1),
+                    freqs_cis[i].unsqueeze(0),
                     dim=1,
                     index=index,
                 )
             )
 
         return torch.cat(result, dim=-1)
+
+    def prepare_image_position_ids(
+        self,
+        height: int,
+        width: int,
+        patch_size,
+        global_index: int,
+    ) -> torch.Tensor:
+        # [H/patch_size, W/patch_size]
+
+        h_patches = height // patch_size
+        w_patches = width // patch_size
+
+        position_ids = torch.zeros(
+            h_patches,
+            w_patches,
+            self.num_axes,
+        )
+
+        # image_index
+        position_ids[:, :, 0] = global_index  # image
+
+        # height (y-index)
+        position_ids[:, :, 1] = (
+            torch.arange(
+                start=h_patches // 2 - h_patches,
+                end=h_patches // 2,
+            )
+            .unsqueeze(1)
+            .repeat(1, w_patches)
+        )
+        # width (x-index)
+        position_ids[:, :, 2] = (
+            torch.arange(
+                start=w_patches // 2 - w_patches,
+                end=w_patches // 2,
+            )
+            .unsqueeze(0)
+            .repeat(h_patches, 1)
+        )
+
+        return position_ids.view(-1, self.num_axes)  # (num_patches, n_axes)
+
+    def prepare_context_position_ids(
+        self,
+        seq_len: int,
+        global_index: int = 0,
+    ) -> torch.Tensor:
+        position_ids = torch.zeros(
+            seq_len,
+            self.num_axes,
+        )
+
+        # context_index (i, ..., i)
+        position_ids[:, 0] = global_index  # text
+
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
+
+        return position_ids
+
+
+class NormalizedPopeEmbedder(PopeEmbedder):
+    def __init__(
+        self,
+        pope_theta: float = 256.0,  # ref: Z-Image
+        axes_dims: list[int] = [64, 128, 128],  # text, height, width
+        axes_lens: list[int] = [256, 128, 128],  # text, height, width
+        zero_centered: list[bool] = [False, True, True],  # text, height, width
+        do_normalize: list[bool] = [
+            False,  # text axis disabled
+            True,
+            True,  # normalized by 64 tokens for height and width
+        ],
+        normalize_by: float = 64.0,
+    ):
+        self.pope_theta = pope_theta
+        self.axes_dims = axes_dims
+        self.axes_lens = axes_lens
+        self.zero_centered = zero_centered
+        self.do_normalize = do_normalize
+        self.normalize_by = normalize_by
+        self.num_axes = len(axes_dims)
+
+        self.freqs_cis = self.precompute_freqs_cis(
+            theta=self.pope_theta,
+            dims=self.axes_dims,
+            lens=self.axes_lens,
+        )  # but only used with text axis
+
+    def get_normalized_pope_freqs(
+        self,
+        dim: int,
+        positions: torch.Tensor,  # (num_positions,)
+    ) -> torch.Tensor:
+        freqs = 1.0 / (
+            self.pope_theta
+            ** (
+                # pope uses full dim
+                torch.arange(0, dim, 1, dtype=torch.float64, device=torch.device("cpu"))
+                / dim
+            )
+        )
+
+        # normalize positions
+        if (positions.max() - positions.min()) != 0:
+            positions = (
+                positions / (positions.max() - positions.min()) * self.normalize_by
+            )  # normalize positions
+
+        freqs = torch.outer(positions, freqs).float()  # (max_position, dim)
+
+        freqs_cis = torch.polar(
+            abs=torch.ones_like(freqs),
+            angle=freqs,
+        ).to(torch.complex64)  # (min_position~max_position, dim//2) complex64
+
+        # 大きさは変えずに回転を表す複素数
+        return freqs_cis  # (num_positions, dim) complex64
+
+    # get frequencies for given position ids
+    def __call__(self, position_ids: torch.Tensor):
+        # move to device
+        freqs_cis = [fc.to(position_ids.device) for fc in self.freqs_cis]
+
+        result = []
+        for i, do_norm in enumerate(self.do_normalize):
+            if not do_norm:
+                # not normalized
+                # use default pope frequencies
+                index = (
+                    position_ids[..., i : i + 1]
+                    .repeat(
+                        # match dimensions for each axis
+                        1,  # batch size?
+                        1,  # sequence length?
+                        freqs_cis[i].shape[-1],
+                    )
+                    .to(torch.int64)
+                ) + self.get_offset(axis=i)  # adjust for zero-centered axes
+                result.append(
+                    torch.gather(
+                        freqs_cis[i].unsqueeze(0),
+                        dim=1,
+                        index=index,
+                    )
+                )
+                continue
+
+            # normalized pope frequencies
+            # example position ids:
+            # [-2, -1, 0, 1, 2] (for 5 tokens)
+            # [-1.5, -0.5, 0.5, 1.5] (for 4 tokens)
+            result.append(
+                # normalized to
+                # [-2/4*64, -1/4*64, 0/4*64, 1/4*64, 2/4*64] = [-32, -16, 0, 16, 32]
+                # [-1.5/3*64, -0.5/3*64, 0.5/3*64, 1.5/3*64] = [-32, -10.67, 10.67, 32]
+                self.get_normalized_pope_freqs(
+                    dim=self.axes_dims[i],
+                    positions=position_ids[..., i].float(),
+                ).unsqueeze(0)
+            )
+
+        return torch.cat(result, dim=-1)
+
+    # normalized image position
+    def prepare_image_position_ids(
+        self,
+        height: int,
+        width: int,
+        patch_size,
+        global_index: int,
+    ) -> torch.Tensor:
+        # [H/patch_size, W/patch_size]
+
+        h_patches = height // patch_size
+        w_patches = width // patch_size
+
+        position_ids = torch.zeros(
+            h_patches,
+            w_patches,
+            self.num_axes,
+        )
+
+        # image_index
+        position_ids[:, :, 0] = global_index  # image
+
+        # height (y-index)
+        position_ids[:, :, 1] = (
+            (torch.arange(h_patches, dtype=torch.float32) - ((h_patches - 1) / 2))
+            .unsqueeze(1)
+            .repeat(1, w_patches)
+        )
+        # width (x-index)
+        position_ids[:, :, 2] = (
+            (torch.arange(w_patches, dtype=torch.float32) - ((w_patches - 1) / 2))
+            .unsqueeze(0)
+            .repeat(h_patches, 1)
+        )
+
+        return position_ids.view(-1, self.num_axes)  # (num_patches, n_axes)
+
+    # same as parent
+    def prepare_context_position_ids(
+        self,
+        seq_len: int,
+        global_index: int = 0,
+    ) -> torch.Tensor:
+        position_ids = torch.zeros(
+            seq_len,
+            self.num_axes,
+        )
+
+        # context_index (i, ..., i)
+        position_ids[:, 0] = global_index  # text
+
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
+
+        return position_ids

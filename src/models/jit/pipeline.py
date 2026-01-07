@@ -10,7 +10,7 @@ from safetensors.torch import load_file
 from .denoiser import JiT, Denoiser
 from .text_encoder import TextEncoder
 from .class_encoder import ClassEncoder
-from .config import JiTConfig, ClassContextConfig, TextContextConfig
+from .config import JiTConfig, ClassContextConfig
 
 from ...modules.quant import replace_by_prequantized_weights
 from ...utils import tensor as tensor_utils

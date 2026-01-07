@@ -9,7 +9,6 @@ import torch.utils.checkpoint as checkpoint
 
 
 from ....modules.norm import NormType, get_norm_layer
-from ....modules.attention import scaled_dot_product_attention
 from ..denoiser import (
     Attention,
     SwiGLU,
@@ -19,120 +18,13 @@ from ..denoiser import (
     FinalLayer,
     BottleneckFinalLayer,
     JiT,
-    apply_rope,
     PopeAttention,
 )
 from ..pipeline import JiTModel
 from ..config import DenoiserConfig, JiTConfig, PositionalEncoding
-from .pope import PopeEmbedder, apply_pope
+from .pope import PopeEmbedder, NormalizedPopeEmbedder
 
 NormPosition = Literal["pre", "post", "sandwich"]
-
-
-class CrossAttention(Attention):
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        key_value_states: torch.Tensor,
-        rope_freqs: torch.Tensor,
-        mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
-    ) -> torch.Tensor:
-        batch_size, seq_len, _dim = hidden_states.shape
-
-        # QKV
-        q = self.to_q(hidden_states)
-        k = self.to_k(key_value_states)
-        v = self.to_v(key_value_states)
-
-        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
-        k = self._pre_attn_reshape(k)
-        v = self._pre_attn_reshape(v)
-
-        # QKNorm
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        q = apply_rope(q, rope_freqs)
-        k = apply_rope(k, rope_freqs)
-
-        if mask is not None:
-            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
-            mask = (
-                mask.bool()
-                .view(batch_size, 1, 1, seq_len)
-                .expand(-1, self.num_heads, seq_len, -1)
-            )
-
-        attn = scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout=self.attn_dropout.p if self.training else 0.0,
-            mask=mask,
-            is_causal=False,
-        ).to(hidden_states.dtype)
-        attn = self._post_attn_reshape(attn)
-
-        # output
-        out = self.to_o(attn)
-        out = self.proj_dropout(out)
-
-        return out
-
-
-class PopeCrossAttention(PopeAttention):
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        key_value_states: torch.Tensor,
-        rope_freqs: torch.Tensor,
-        mask: torch.Tensor | None = None,  # 1: attend, 0: ignore
-    ) -> torch.Tensor:
-        batch_size, seq_len, _dim = hidden_states.shape
-
-        # QKV
-        q = self.to_q(hidden_states)
-        k = self.to_k(key_value_states)
-        v = self.to_v(key_value_states)
-
-        q = self._pre_attn_reshape(q)  # [B, num_heads, N, head_dim]
-        k = self._pre_attn_reshape(k)
-        v = self._pre_attn_reshape(v)
-
-        # QKNorm
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        q = apply_pope(q, rope_freqs)
-        k = apply_pope(
-            k,
-            rope_freqs,
-            learned_bias=self.pope_bias.clamp(-torch.pi, torch.pi),
-        )  # apply learned bias to K only
-
-        if mask is not None:
-            # mask: (batch_size, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
-            mask = (
-                mask.bool()
-                .view(batch_size, 1, 1, seq_len)
-                .expand(-1, self.num_heads, seq_len, -1)
-            )
-
-        attn = scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            dropout=self.attn_dropout.p if self.training else 0.0,
-            mask=mask,
-            is_causal=False,
-        ).to(hidden_states.dtype)
-        attn = self._post_attn_reshape(attn)
-
-        # output
-        out = self.to_o(attn)
-        out = self.proj_dropout(out)
-
-        return out
 
 
 class UJiTBlock(nn.Module):
@@ -185,7 +77,7 @@ class UJiTBlock(nn.Module):
                 proj_dropout=proj_dropout,
                 norm_type="rms",
             )
-            if positional_encoding == "pope"
+            if positional_encoding in ["pope", "n-pope"]
             else Attention(
                 dim=hidden_dim,
                 num_heads=num_heads,
@@ -220,7 +112,7 @@ class UJiTBlock(nn.Module):
         skip_hidden_states: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ):
-        # skip cross attention
+        # skip linear
         if skip_hidden_states is not None:
             hidden_states = self.skip_merge(
                 torch.cat(
@@ -309,6 +201,15 @@ class UJiT(JiT):
                 axes_dims=config.rope_axes_dims,
                 axes_lens=config.rope_axes_lens,
                 zero_centered=config.rope_zero_centered,
+            )
+        elif config.positional_encoding == "n-pope":
+            self.rope_embedder = NormalizedPopeEmbedder(
+                pope_theta=config.rope_theta,
+                axes_dims=config.rope_axes_dims,
+                axes_lens=config.rope_axes_lens,
+                zero_centered=config.rope_zero_centered,
+                do_normalize=config.rope_do_normalize,
+                normalize_by=config.rope_normalize_by,
             )
         else:
             raise ValueError(
@@ -539,20 +440,20 @@ class UJiT(JiT):
             global_index=3,  # after context and time tokens
         )
 
-        # actually: patches -> imagesize -> time -> context
-        position_ids = torch.cat(
-            [
-                patches_position_ids,
-                imagesize_position_ids,
-                time_position_ids,
-                context_position_ids,
-            ],
-            dim=0,
-        ).view(1, -1, self.num_axes)  # (1, total_seq_len, n_axes)
-
         # prepare RoPE
         freqs_cis = (
-            self.rope_embedder(position_ids=position_ids)
+            torch.cat(
+                [
+                    # actually: patches -> imagesize -> time -> context
+                    # NOTE: DO NOT embed after concat, embed before concat!
+                    # because we don't know the max and min position ids for each part after concat when use Normalized-Pope
+                    self.rope_embedder(position_ids=patches_position_ids),
+                    self.rope_embedder(position_ids=imagesize_position_ids),
+                    self.rope_embedder(position_ids=time_position_ids),
+                    self.rope_embedder(position_ids=context_position_ids),
+                ],
+                dim=1,  # cat in seq_len dimension
+            )
             .repeat(
                 batch_size,
                 1,
@@ -661,18 +562,10 @@ class UJiT(JiT):
         patches = tokens[:, :patches_len, :]  # only keep patch tokens
         patches = self.final_layer(patches)
 
-        pred_image = (
-            self.pixel_shuffle(
-                patches,
-                height=height,
-                width=width,
-            )
-            if self.config.use_pixel_shuffle
-            else self.unpatchify(
-                patches,
-                height=height,
-                width=width,
-            )
+        pred_image = self.unpatchify(
+            patches,
+            height=height,
+            width=width,
         )
 
         return pred_image

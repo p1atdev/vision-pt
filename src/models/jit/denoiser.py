@@ -123,6 +123,7 @@ class RopeEmbedder:
         self.axes_dims = axes_dims
         self.axes_lens = axes_lens
         self.zero_centered = zero_centered
+        self.num_axes = len(axes_dims)
 
         # text starts with 0, image axes are zero-centered
 
@@ -223,6 +224,67 @@ class RopeEmbedder:
             )
 
         return torch.cat(result, dim=-1)
+
+    def prepare_image_position_ids(
+        self,
+        height: int,
+        width: int,
+        patch_size,
+        global_index: int,
+    ) -> torch.Tensor:
+        # [H/patch_size, W/patch_size]
+
+        h_patches = height // patch_size
+        w_patches = width // patch_size
+
+        position_ids = torch.zeros(
+            h_patches,
+            w_patches,
+            self.num_axes,
+        )
+
+        # image_index
+        position_ids[:, :, 0] = global_index  # image
+
+        # height (y-index)
+        position_ids[:, :, 1] = (
+            torch.arange(
+                start=h_patches // 2 - h_patches,
+                end=h_patches // 2,
+            )
+            .unsqueeze(1)
+            .repeat(1, w_patches)
+        )
+        # width (x-index)
+        position_ids[:, :, 2] = (
+            torch.arange(
+                start=w_patches // 2 - w_patches,
+                end=w_patches // 2,
+            )
+            .unsqueeze(0)
+            .repeat(h_patches, 1)
+        )
+
+        return position_ids.view(-1, self.num_axes)  # (num_patches, n_axes)
+
+    def prepare_context_position_ids(
+        self,
+        seq_len: int,
+        global_index: int = 0,
+    ) -> torch.Tensor:
+        position_ids = torch.zeros(
+            seq_len,
+            self.num_axes,
+        )
+
+        # context_index (i, ..., i)
+        position_ids[:, 0] = global_index  # text
+
+        # token indices are (0, 0)...(seq_len-1, seq_len-1)
+        position_ids[:, 1] = torch.arange(seq_len)
+        position_ids[:, 2] = torch.arange(seq_len)
+
+        return position_ids
 
 
 class Attention(nn.Module):
@@ -547,7 +609,7 @@ class JiTBlock(nn.Module):
                 eps=eps,
                 norm_type=norm_type,
             )
-            if positional_encoding == "pope"
+            if positional_encoding in ["pope", "n-pope"]
             else Attention(
                 dim=hidden_dim,
                 num_heads=num_heads,
@@ -746,60 +808,24 @@ class JiT(nn.Module):
     ) -> torch.Tensor:
         # [H/patch_size, W/patch_size]
 
-        patch_size = self.config.patch_size
-        h_patches = height // patch_size
-        w_patches = width // patch_size
-
-        position_ids = torch.zeros(
-            h_patches,
-            w_patches,
-            self.num_axes,
+        return self.rope_embedder.prepare_image_position_ids(
+            height,
+            width,
+            self.config.patch_size,
+            global_index,
         )
-
-        # image_index
-        position_ids[:, :, 0] = global_index  # image
-
-        # height (y-index)
-        position_ids[:, :, 1] = (
-            torch.arange(
-                start=h_patches // 2 - h_patches,
-                end=h_patches // 2,
-            )
-            .unsqueeze(1)
-            .repeat(1, w_patches)
-        )
-        # width (x-index)
-        position_ids[:, :, 2] = (
-            torch.arange(
-                start=w_patches // 2 - w_patches,
-                end=w_patches // 2,
-            )
-            .unsqueeze(0)
-            .repeat(h_patches, 1)
-        )
-
-        return position_ids.view(-1, self.num_axes)  # (num_patches, n_axes)
 
     def prepare_context_position_ids(
         self,
         seq_len: int,
         global_index: int = 0,
     ) -> torch.Tensor:
-        position_ids = torch.zeros(
+        return self.rope_embedder.prepare_context_position_ids(
             seq_len,
-            self.num_axes,
+            global_index,
         )
 
-        # context_index (i, ..., i)
-        position_ids[:, 0] = global_index  # text
-
-        # token indices are (0, 0)...(seq_len-1, seq_len-1)
-        position_ids[:, 1] = torch.arange(seq_len)
-        position_ids[:, 2] = torch.arange(seq_len)
-
-        return position_ids
-
-    def unpatchify(
+    def _unpatchify(
         self,
         patches: torch.Tensor,
         height: int,
@@ -865,6 +891,25 @@ class JiT(nn.Module):
         images = F.pixel_shuffle(patches, upscale_factor=patch_size)
 
         return images
+
+    def unpatchify(
+        self,
+        patches: torch.Tensor,
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        if self.config.use_pixel_shuffle:
+            return self.pixel_shuffle(
+                patches,
+                height,
+                width,
+            )
+
+        return self._unpatchify(
+            patches,
+            height,
+            width,
+        )
 
     def get_imagesize_embed(
         self,
@@ -983,20 +1028,20 @@ class JiT(nn.Module):
             global_index=3,  # after context and time tokens
         )
 
-        # actually: patches -> imagesize -> time -> context
-        position_ids = torch.cat(
-            [
-                patches_position_ids,
-                imagesize_position_ids,
-                time_position_ids,
-                context_position_ids,
-            ],
-            dim=0,
-        ).view(1, -1, self.num_axes)  # (1, total_seq_len, n_axes)
-
         # prepare RoPE
         freqs_cis = (
-            self.rope_embedder(position_ids=position_ids)
+            torch.cat(
+                [
+                    # actually: patches -> imagesize -> time -> context
+                    # NOTE: DO NOT embed after concat, embed before concat!
+                    # because we don't know the max and min position ids for each part after concat when use Normalized-Pope
+                    self.rope_embedder(position_ids=patches_position_ids),
+                    self.rope_embedder(position_ids=imagesize_position_ids),
+                    self.rope_embedder(position_ids=time_position_ids),
+                    self.rope_embedder(position_ids=context_position_ids),
+                ],
+                dim=1,  # cat in seq_len dimension
+            )
             .repeat(
                 batch_size,
                 1,
@@ -1070,18 +1115,10 @@ class JiT(nn.Module):
         patches = tokens[:, :patches_len, :]  # only keep patch tokens
         patches = self.final_layer(patches)
 
-        pred_image = (
-            self.pixel_shuffle(
-                patches,
-                height=height,
-                width=width,
-            )
-            if self.config.use_pixel_shuffle
-            else self.unpatchify(
-                patches,
-                height=height,
-                width=width,
-            )
+        pred_image = self.unpatchify(
+            patches,
+            height=height,
+            width=width,
         )
 
         return pred_image

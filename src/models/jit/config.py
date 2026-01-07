@@ -10,7 +10,7 @@ from ...utils.dtype import str_to_dtype
 from ...modules.loss.flow_match import ModelPredictionType
 from ...modules.norm import NormType
 
-PositionalEncoding = Literal["rope", "pope"]
+PositionalEncoding = Literal["rope", "pope", "n-pope"]
 
 
 class DenoiserConfig(BaseModel):
@@ -38,6 +38,8 @@ class DenoiserConfig(BaseModel):
     rope_axes_dims: list[int] = [16, 24, 24]
     rope_axes_lens: list[int] = [256, 128, 128]
     rope_zero_centered: list[bool] = [False, True, True]
+    rope_do_normalize: list[bool] = [False, True, True]
+    rope_normalize_by: float = 64.0
 
     context_dim: int = 768
     context_start_block: int = 0

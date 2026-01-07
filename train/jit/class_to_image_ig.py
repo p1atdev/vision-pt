@@ -3,9 +3,8 @@ from contextlib import nullcontext
 import random
 
 import torch
-import torch.nn.functional as F
 
-from src.models.jit.extension.uvit import UJiTModel, UJiTConfig
+from src.models.jit.extension.ig import IGJiTModel, IGJiTConfig
 from src.trainer.common import Trainer
 from src.config import TrainConfig
 from src.dataset.square_class_image import SquareClassImageDatasetConfig
@@ -15,15 +14,12 @@ from src.modules.loss.flow_match import (
     prepare_scaled_noised_latents,
 )
 from src.modules.timestep import sample_timestep
-from src.modules.loss.perceptual import (
-    PerceptualLossConfig,
-    PerceptualLoss,
-)
+
 
 from class_to_image import JiTForClassToImageTraining
 
 
-class UJiTConfigForTraining(UJiTConfig):
+class IGJiTConfigForTraining(IGJiTConfig):
     checkpoint_path: str | None = None
 
     max_token_length: int = 64
@@ -37,33 +33,23 @@ class UJiTConfigForTraining(UJiTConfig):
 
     drop_context_rate: float = 0.1  # for classifier-free guidance
 
-    lowres_loss: set[int] = set()  # e.g., [64, 96, 128] for 1/2 and 1/4 resolutions
-    perceptual_losses: set[PerceptualLossConfig] = set()
+    # IG
+    intermediate_loss_weight: float = 0.5  # weight for internal guidance loss
 
     @property
     def is_from_scratch(self) -> bool:
         return self.checkpoint_path is None
 
-    @property
-    def has_additional_losses(self) -> bool:
-        return (len(self.lowres_loss) + len(self.perceptual_losses)) > 0
 
+class IGJiTForClassToImageTraining(JiTForClassToImageTraining):
+    model: IGJiTModel
+    model_class: type[IGJiTModel] = IGJiTModel
 
-class UJiTForClassToImageTraining(JiTForClassToImageTraining):
-    model: UJiTModel
-    model_class: type[UJiTModel] = UJiTModel
-
-    model_config: UJiTConfigForTraining
-    model_config_class = UJiTConfigForTraining
+    model_config: IGJiTConfigForTraining
+    model_config_class = IGJiTConfigForTraining
 
     def setup_model(self):
         super().setup_model()
-
-        if self.accelerator.is_main_process:
-            self.perceptual_loss_module = PerceptualLoss(
-                loss_configs=list(self.model_config.perceptual_losses),
-                convert_zero_to_one=True,
-            ).to(self.accelerator.device)
 
     def train_step(self, batch: dict) -> torch.Tensor:
         images: torch.Tensor = batch["image"]
@@ -117,7 +103,7 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
         ).repeat(images.shape[0], 1)
 
         # 3. Predict the noise
-        model_pred = self.model.denoiser(
+        model_pred, intermediate_pred = self.model.denoiser(
             image=noisy_image.to(dtype=dtype),
             timestep=timesteps.to(dtype=dtype),
             context=context.to(dtype=dtype),
@@ -135,69 +121,26 @@ class UJiTForClassToImageTraining(JiTForClassToImageTraining):
             random_noise=_random_noise,  # only for v-pred
             timesteps=timesteps,
         )
+        self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
 
-        total_loss = l2_loss
+        # intermediate loss
+        intermediate_l2_loss = self.treat_loss(
+            model_pred=intermediate_pred,
+            noisy_image=noisy_image,
+            clean_image=images,
+            random_noise=_random_noise,  # only for v-pred
+            timesteps=timesteps,
+        )
+        self.log(
+            "train/intermediate_l2_loss",
+            intermediate_l2_loss,
+            on_step=True,
+            on_epoch=True,
+        )
 
-        if self.model_config.has_additional_losses:
-            self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
-
-        if len(self.model_config.lowres_loss) > 0:
-            for idx, size in enumerate(self.model_config.lowres_loss):
-                if size <= 0:
-                    continue
-
-                def resize(x: torch.Tensor) -> torch.Tensor:
-                    return F.interpolate(
-                        x,
-                        size=size,
-                        mode="area",
-                    )
-
-                image_size_info = torch.tensor(
-                    [[size, size]], device=images.device
-                ).repeat(images.shape[0], 1)
-                lowres_noisy_image = resize(noisy_image)
-
-                lowres_model_pred = self.model.denoiser(
-                    image=lowres_noisy_image.to(dtype=dtype),
-                    timestep=timesteps.to(dtype=dtype),
-                    context=context.to(dtype=dtype),
-                    context_mask=attention_mask,
-                    original_size=image_size_info,
-                    target_size=image_size_info,
-                    crop_coords=torch.zeros_like(image_size_info),
-                )
-
-                # downsample images to the target scale
-                lowres_l2_loss = self.treat_loss(
-                    model_pred=resize(lowres_model_pred),
-                    noisy_image=lowres_noisy_image,
-                    clean_image=resize(images),
-                    random_noise=resize(_random_noise),  # only for v-pred
-                    timesteps=timesteps,
-                )
-                self.log(
-                    f"train/lowres_loss_{size}x{size}",
-                    lowres_l2_loss,
-                    on_step=True,
-                    on_epoch=True,
-                )
-
-                total_loss = total_loss + lowres_l2_loss
-
-        if len(self.model_config.perceptual_losses) > 0:
-            perceptual_loss = self.perceptual_loss_module(
-                pred=model_pred,
-                target=images,
-            )
-            for metric_name, metric_loss in perceptual_loss.items():
-                self.log(
-                    f"train/{metric_name}_loss",
-                    metric_loss,
-                    on_step=True,
-                    on_epoch=True,
-                )
-                total_loss = total_loss + metric_loss
+        total_loss = (
+            l2_loss + self.model_config.intermediate_loss_weight * intermediate_l2_loss
+        )
 
         self.log("train/loss", total_loss, on_step=True, on_epoch=True)
 
@@ -214,7 +157,7 @@ def main(config: str):
     )
     trainer.register_train_dataset_class(SquareClassImageDatasetConfig)
     trainer.register_preview_dataset_class(TextToImagePreviewConfig)
-    trainer.register_model_class(UJiTForClassToImageTraining)
+    trainer.register_model_class(IGJiTForClassToImageTraining)
 
     trainer.train()
 
