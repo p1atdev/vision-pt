@@ -263,6 +263,7 @@ class IGJiTModel(JiTModel):
         height: int = 256,
         num_inference_steps: int = 20,
         cfg_scale: float = 2.0,
+        ig_scale: float = 1.0,
         max_token_length: int = 64,
         seed: int | None = None,
         execution_dtype: torch.dtype = torch.bfloat16,
@@ -270,6 +271,7 @@ class IGJiTModel(JiTModel):
         do_cfg_renorm: bool = False,
         do_dynamic_thresholding: bool = False,
         cfg_time_range: list[float] = [0.0, 1.0],
+        ig_time_range: list[float] = [0.0, 1.0],
         # do_offloading: bool = False,
     ):
         # 1. Prepare args
@@ -277,6 +279,7 @@ class IGJiTModel(JiTModel):
             torch.device(device) if isinstance(device, str) else device
         )
         do_cfg = cfg_scale > 1.0
+        do_ig = ig_scale > 1.0
         timesteps = self.prepare_timesteps(
             num_inference_steps=num_inference_steps,
             device=execution_device,
@@ -318,6 +321,9 @@ class IGJiTModel(JiTModel):
                 is_in_cfg_time = (  # cfg interval check
                     cfg_time_range[0] <= float(timestep) <= cfg_time_range[1]
                 )
+                is_in_ig_time = (  # ig interval check
+                    ig_time_range[0] <= float(timestep) <= ig_time_range[1]
+                )
 
                 image_input = (
                     torch.cat([noisy_image] * 2)
@@ -327,7 +333,7 @@ class IGJiTModel(JiTModel):
                 _batch_size = image_input.shape[0]
 
                 # TODO: IG guidance
-                model_pred, _ig = self.denoiser(
+                model_pred, ig_pred = self.denoiser(
                     image=image_input,
                     timestep=timestep.expand(_batch_size),
                     context=prompt_embeddings[:_batch_size],
@@ -336,6 +342,9 @@ class IGJiTModel(JiTModel):
                     target_size=target_size[:_batch_size],
                     crop_coords=crop_coords[:_batch_size],
                 )
+
+                if do_ig and is_in_ig_time:
+                    model_pred = ig_pred + ig_scale * (model_pred - ig_pred)
 
                 if do_cfg and is_in_cfg_time:
                     velocity = self.make_cfg_velocity_pred(
