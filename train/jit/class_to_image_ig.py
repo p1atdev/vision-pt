@@ -35,6 +35,7 @@ class IGJiTConfigForTraining(IGJiTConfig):
 
     # IG
     intermediate_loss_weight: float = 0.5  # weight for internal guidance loss
+    ig_scale: float = 0.5  # scale for internal guidance
 
     @property
     def is_from_scratch(self) -> bool:
@@ -117,7 +118,10 @@ class IGJiTForClassToImageTraining(JiTForClassToImageTraining):
         l2_loss = self.treat_loss(
             model_pred=model_pred,
             noisy_image=noisy_image,
-            clean_image=images,
+            clean_image=(
+                images
+                + self.model_config.ig_scale * (model_pred - intermediate_pred).detach()
+            ),
             random_noise=_random_noise,  # only for v-pred
             timesteps=timesteps,
         )
