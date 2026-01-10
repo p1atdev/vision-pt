@@ -58,11 +58,11 @@ class UJiTBlock(nn.Module):
                 bias=bias,
             )
 
-        if norm_position == "pre" or norm_position == "sandwich":
+        if self.has_pre_norm:
             self.norm_attn_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
         else:
             self.norm_attn_pre = nn.Identity()
-        if norm_position == "post" or norm_position == "sandwich":
+        if self.has_post_norm:
             self.norm_attn_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
         else:
             self.norm_attn_post = nn.Identity()
@@ -89,11 +89,11 @@ class UJiTBlock(nn.Module):
             )
         )
 
-        if norm_position == "pre" or norm_position == "sandwich":
+        if self.has_pre_norm:
             self.norm_mlp_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
         else:
             self.norm_mlp_pre = nn.Identity()
-        if norm_position == "post" or norm_position == "sandwich":
+        if self.has_post_norm:
             self.norm_mlp_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
         else:
             self.norm_mlp_post = nn.Identity()
