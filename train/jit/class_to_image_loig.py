@@ -3,10 +3,9 @@ from contextlib import nullcontext
 import random
 from PIL import Image
 
-
 import torch
 
-from src.models.jit.extension.ig import IGJiTModel, IGJiTConfig
+from src.models.jit.extension.loig import LoIGJiTModel, LoIGJiTConfig
 from src.trainer.common import Trainer
 from src.config import TrainConfig
 from src.dataset.square_class_image import SquareClassImageDatasetConfig
@@ -19,10 +18,11 @@ from src.modules.timestep import sample_timestep
 from src.utils.grid import images_to_grid_image
 from src.utils.logging import wandb_image
 
+
 from class_to_image import JiTForClassToImageTraining
 
 
-class IGJiTConfigForTraining(IGJiTConfig):
+class LoIGJiTConfigForTraining(LoIGJiTConfig):
     checkpoint_path: str | None = None
 
     max_token_length: int = 64
@@ -37,20 +37,19 @@ class IGJiTConfigForTraining(IGJiTConfig):
     drop_context_rate: float = 0.1  # for classifier-free guidance
 
     # IG
-    intermediate_loss_weight: float = 0.5  # weight for internal guidance loss
-    ig_scale: float = 0.5  # scale for internal guidance
+    loig_loss_weight: float = 1.0  # weight for internal guidance loss
 
     @property
     def is_from_scratch(self) -> bool:
         return self.checkpoint_path is None
 
 
-class IGJiTForClassToImageTraining(JiTForClassToImageTraining):
-    model: IGJiTModel
-    model_class: type[IGJiTModel] = IGJiTModel
+class LoIGJiTForClassToImageTraining(JiTForClassToImageTraining):
+    model: LoIGJiTModel
+    model_class: type[LoIGJiTModel] = LoIGJiTModel
 
-    model_config: IGJiTConfigForTraining
-    model_config_class = IGJiTConfigForTraining
+    model_config: LoIGJiTConfigForTraining
+    model_config_class = LoIGJiTConfigForTraining
 
     def setup_model(self):
         super().setup_model()
@@ -107,7 +106,7 @@ class IGJiTForClassToImageTraining(JiTForClassToImageTraining):
         ).repeat(images.shape[0], 1)
 
         # 3. Predict the noise
-        model_pred, intermediate_pred = self.model.denoiser(
+        model_pred, weak_pred = self.model.denoiser(
             image=noisy_image.to(dtype=dtype),
             timestep=timesteps.to(dtype=dtype),
             context=context.to(dtype=dtype),
@@ -121,33 +120,28 @@ class IGJiTForClassToImageTraining(JiTForClassToImageTraining):
         l2_loss = self.treat_loss(
             model_pred=model_pred,
             noisy_image=noisy_image,
-            clean_image=(
-                images
-                + self.model_config.ig_scale * (model_pred - intermediate_pred).detach()
-            ),
+            clean_image=images,
             random_noise=_random_noise,  # only for v-pred
             timesteps=timesteps,
         )
         self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
 
         # intermediate loss
-        intermediate_l2_loss = self.treat_loss(
-            model_pred=intermediate_pred,
+        loig_l2_loss = self.treat_loss(
+            model_pred=weak_pred,
             noisy_image=noisy_image,
             clean_image=images,
             random_noise=_random_noise,  # only for v-pred
             timesteps=timesteps,
         )
         self.log(
-            "train/intermediate_l2_loss",
-            intermediate_l2_loss,
+            "train/loig_l2_loss",
+            loig_l2_loss,
             on_step=True,
             on_epoch=True,
         )
 
-        total_loss = (
-            l2_loss + self.model_config.intermediate_loss_weight * intermediate_l2_loss
-        )
+        total_loss = l2_loss + self.model_config.loig_loss_weight * loig_l2_loss
 
         self.log("train/loss", total_loss, on_step=True, on_epoch=True)
 
@@ -206,7 +200,7 @@ def main(config: str):
     )
     trainer.register_train_dataset_class(SquareClassImageDatasetConfig)
     trainer.register_preview_dataset_class(TextToImagePreviewConfig)
-    trainer.register_model_class(IGJiTForClassToImageTraining)
+    trainer.register_model_class(LoIGJiTForClassToImageTraining)
 
     trainer.train()
 
