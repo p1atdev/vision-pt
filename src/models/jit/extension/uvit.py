@@ -58,14 +58,16 @@ class UJiTBlock(nn.Module):
                 bias=bias,
             )
 
-        if self.has_pre_norm:
-            self.norm_attn_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
-        else:
-            self.norm_attn_pre = nn.Identity()
-        if self.has_post_norm:
-            self.norm_attn_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
-        else:
-            self.norm_attn_post = nn.Identity()
+        self.norm_attn_pre = (
+            get_norm_layer(norm_type, hidden_dim, eps=eps)
+            if self.has_pre_norm
+            else nn.Identity()
+        )
+        self.norm_attn_post = (
+            get_norm_layer(norm_type, hidden_dim, eps=eps)
+            if self.has_post_norm
+            else nn.Identity()
+        )
 
         self.attn = (
             PopeAttention(
@@ -89,14 +91,17 @@ class UJiTBlock(nn.Module):
             )
         )
 
-        if self.has_pre_norm:
-            self.norm_mlp_pre = get_norm_layer(norm_type, hidden_dim, eps=eps)
-        else:
-            self.norm_mlp_pre = nn.Identity()
-        if self.has_post_norm:
-            self.norm_mlp_post = get_norm_layer(norm_type, hidden_dim, eps=eps)
-        else:
-            self.norm_mlp_post = nn.Identity()
+        self.norm_mlp_pre = (
+            get_norm_layer(norm_type, hidden_dim, eps=eps)
+            if self.has_pre_norm
+            else nn.Identity()
+        )
+
+        self.norm_mlp_post = (
+            get_norm_layer(norm_type, hidden_dim, eps=eps)
+            if self.has_post_norm
+            else nn.Identity()
+        )
 
         self.mlp = SwiGLU(
             dim=hidden_dim,
