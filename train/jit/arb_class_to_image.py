@@ -37,6 +37,8 @@ class JiTConfigForTraining(JiTConfig):
 
     drop_context_rate: float = 0.1  # for classifier-free guidance
 
+    lowres_loss: list[float] = []  # e.g., [0.5, 0.25] for 1/2 and 1/4 resolutions
+
     @property
     def is_from_scratch(self) -> bool:
         return self.checkpoint_path is None
@@ -219,9 +221,55 @@ class JiTForClassToImageTraining(ModelForTraining, nn.Module):
             timesteps=timesteps,
         )
 
-        # TODO: support LPIPS loss?
-
         total_loss = l2_loss
+
+        self.log("train/l2_loss", l2_loss, on_step=True, on_epoch=True)
+
+        if len(self.model_config.lowres_loss) > 0:
+            for idx, scale in enumerate(self.model_config.lowres_loss):
+                if scale <= 0.0:
+                    continue
+
+                def resize(x: torch.Tensor) -> torch.Tensor:
+                    return F.interpolate(
+                        x,
+                        scale_factor=scale,
+                        mode="area",
+                    )
+
+                resized_image = resize(images)
+                lowres_b, _, lowres_h, lowres_w = resized_image.shape
+                image_size_info = torch.tensor(
+                    [[lowres_h, lowres_w]], device=images.device
+                ).repeat(lowres_b, 1)
+                lowres_noisy_image = resize(noisy_image)
+
+                lowres_model_pred = self.model.denoiser(
+                    image=lowres_noisy_image.to(dtype=dtype),
+                    timestep=timesteps.to(dtype=dtype),
+                    context=context.to(dtype=dtype),
+                    context_mask=attention_mask,
+                    original_size=original_size * scale,
+                    target_size=image_size_info,
+                    crop_coords=crop_coords * scale,
+                )
+
+                # downsample images to the target scale
+                lowres_l2_loss = self.treat_loss(
+                    model_pred=lowres_model_pred,
+                    noisy_image=lowres_noisy_image,
+                    clean_image=resize(images),
+                    random_noise=resize(_random_noise),  # only for v-pred
+                    timesteps=timesteps,
+                )
+                self.log(
+                    f"train/lowres_loss_{idx}({scale:.2f})",
+                    lowres_l2_loss,
+                    on_step=True,
+                    on_epoch=True,
+                )
+
+                total_loss = total_loss + lowres_l2_loss
 
         self.log("train/loss", total_loss, on_step=True, on_epoch=True)
 

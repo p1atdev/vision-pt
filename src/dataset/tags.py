@@ -49,9 +49,9 @@ def format_general_character_tags(
     # quality tags
     quality_tags = []
     if score is not None:
-        if score >= 20:
+        if score >= 50:
             quality_tags.append("masterpiece")
-        elif score >= 10:
+        elif score >= 25:
             quality_tags.append("best_quality")
         elif score >= 5:
             quality_tags.append("high_quality")
