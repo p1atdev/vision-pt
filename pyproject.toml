@@ -47,6 +47,7 @@ dev-dependencies = [
     "gradio>=5.9.1",
     "seaborn>=0.13.2",
     "ty>=0.0.1a7",
+    "scikit-learn>=1.7.2",
 ]
 no-build-isolation-package = ["flash-attn"]
 
