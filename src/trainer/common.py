@@ -358,7 +358,7 @@ class Trainer:
                         self.before_eval_step()
 
                         with self.accelerator.autocast():
-                            loss = self.raw_model.eval_step(batch)
+                            loss = self.infer_model.eval_step(batch)
                         pbar.set_postfix({"loss": loss.item()})
 
                         pbar.update(1)
