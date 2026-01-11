@@ -391,6 +391,7 @@ class Trainer:
         if self.saving_strategy.should_save(epoch, steps):
             self.accelerator.wait_for_everyone()
             self.raw_model.before_save_model()
+            self.infer_model.before_save_model()
 
             if len(self.saving_callbacks) > 0 and self.accelerator.is_main_process:
                 unwrapped_model: ModelForTraining = self.accelerator.unwrap_model(
@@ -419,6 +420,7 @@ class Trainer:
 
             self.accelerator.wait_for_everyone()
             self.raw_model.after_save_model()
+            self.infer_model.after_save_model()
 
     def call_preview_callbacks(self, epoch: int, steps: int):
         if self.preview_strategy.should_preview(epoch, steps):
