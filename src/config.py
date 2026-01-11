@@ -79,6 +79,9 @@ class TrainerConfig(BaseModel):
     # https://pytorch.org/docs/stable/notes/cuda.html
     allow_tf32: bool = False
 
+    use_ema: bool = False
+    ema_decay: float = 0.9999
+
 
 class TrainConfig(BaseModel):
     model: dict | BaseModel

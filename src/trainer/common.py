@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
+import torch.optim.swa_utils as swa_utils
 
 from accelerate import Accelerator
 from transformers import set_seed
@@ -30,6 +31,7 @@ from ..modules.peft import (
 
 class Trainer:
     model: ModelForTraining
+    ema_model: swa_utils.AveragedModel | None = None
 
     optimizer: optim.Optimizer
     scheduler: optim.lr_scheduler._LRScheduler
@@ -92,6 +94,13 @@ class Trainer:
     def raw_model(self) -> ModelForTraining:
         return self.accelerator.unwrap_model(self.model)
 
+    @property
+    def infer_model(self) -> ModelForTraining:
+        if self.ema_model is not None:
+            return self.ema_model.module  # type: ignore
+        else:
+            return self.raw_model
+
     def get_saving_callbacks(self):
         if (saving := self.config.saving) is not None:
             if len(saving.callbacks) == 0:
@@ -149,6 +158,10 @@ class Trainer:
                 save_last=False,
             )
         self.saving_callbacks = self.get_saving_callbacks()
+        # TODO: better handling?
+        self.ema_saving_callbacks = self.get_saving_callbacks()
+        for callback in self.ema_saving_callbacks:
+            callback.save_name_template = "ema_" + callback.save_name_template
 
     def prepare_preview_strategy(self):
         if (preview := self.config.preview) is not None:
@@ -195,6 +208,14 @@ class Trainer:
 
         print_trainable_parameters(self.model, self.print)
 
+        if self.config.trainer.use_ema:
+            self.ema_model = swa_utils.AveragedModel(
+                self.model,
+                device=self.accelerator.device,
+                avg_fn=swa_utils.get_ema_avg_fn(decay=self.config.trainer.ema_decay),
+                use_buffers=True,
+            )
+            self.print("EMA model is set up.")
         self.model = self.accelerator.prepare(self.model)
 
     def prepare_optimizer(self):
@@ -217,7 +238,7 @@ class Trainer:
         )  # type: ignore  # Accelerator's prepare_optimizer method may not be recognized by type checkers
         self.scheduler = self.accelerator.prepare_scheduler(
             scheduler,
-        )
+        )  # type: ignore
 
     def before_train(self):
         self.torch_configuration()
@@ -361,6 +382,8 @@ class Trainer:
     def apply_gradients(self, current_step: int):
         if current_step % self.gradient_accumulation_steps == 0:
             self.optimizer.step()
+            if self.ema_model is not None:
+                self.ema_model.update_parameters(self.model)
             self.scheduler.step()
             self.optimizer.zero_grad()
 
@@ -382,6 +405,16 @@ class Trainer:
                         state_dict, epoch, steps, metadata=metadata
                     )
 
+                # save ema model if exists
+                if self.ema_model is not None:
+                    for callback in self.ema_saving_callbacks:
+                        callback.save_state_dict(
+                            self.infer_model.get_state_dict_to_save(),
+                            epoch,
+                            steps,
+                            metadata=metadata,
+                        )
+
                 self.print("Model saved.")
 
             self.accelerator.wait_for_everyone()
@@ -391,7 +424,7 @@ class Trainer:
         if self.preview_strategy.should_preview(epoch, steps):
             self.accelerator.wait_for_everyone()
 
-            self.raw_model.before_preview()
+            self.infer_model.before_preview()
 
             if len(self.preview_callbacks) > 0 and self.accelerator.is_main_process:
                 assert self.preview_dataloader is not None
@@ -401,16 +434,16 @@ class Trainer:
                     total=len(self.preview_dataloader),
                     desc="Preview",
                 ):
-                    self.raw_model.before_preview_step()
-                    preview = self.raw_model.preview_step(batch, preview_index=i)
+                    self.infer_model.before_preview_step()
+                    preview = self.infer_model.preview_step(batch, preview_index=i)
                     for callback in self.preview_callbacks:
                         callback.preview_image(preview, epoch, steps, i, metadata=batch)
-                    self.raw_model.after_preview_step()
+                    self.infer_model.after_preview_step()
 
                 self.print("Preview done.")
 
             self.accelerator.wait_for_everyone()
-            self.raw_model.after_preview()
+            self.infer_model.after_preview()
 
     def debug_dataset(self):
         if self.train_dataloader is None:
