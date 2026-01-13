@@ -213,7 +213,7 @@ class Trainer:
                 self.model,
                 device=self.accelerator.device,
                 avg_fn=swa_utils.get_ema_avg_fn(decay=self.config.trainer.ema_decay),
-                use_buffers=True,
+                use_buffers=False,
             )
             self.print("EMA model is set up.")
         self.model = self.accelerator.prepare(self.model)
@@ -426,7 +426,7 @@ class Trainer:
         if self.preview_strategy.should_preview(epoch, steps):
             self.accelerator.wait_for_everyone()
 
-            self.infer_model.before_preview()
+            self.raw_model.before_preview()
 
             if len(self.preview_callbacks) > 0 and self.accelerator.is_main_process:
                 assert self.preview_dataloader is not None
@@ -436,16 +436,16 @@ class Trainer:
                     total=len(self.preview_dataloader),
                     desc="Preview",
                 ):
-                    self.infer_model.before_preview_step()
-                    preview = self.infer_model.preview_step(batch, preview_index=i)
+                    self.raw_model.before_preview_step()
+                    preview = self.raw_model.preview_step(batch, preview_index=i)
                     for callback in self.preview_callbacks:
                         callback.preview_image(preview, epoch, steps, i, metadata=batch)
-                    self.infer_model.after_preview_step()
+                    self.raw_model.after_preview_step()
 
                 self.print("Preview done.")
 
             self.accelerator.wait_for_everyone()
-            self.infer_model.after_preview()
+            self.raw_model.after_preview()
 
     def debug_dataset(self):
         if self.train_dataloader is None:
