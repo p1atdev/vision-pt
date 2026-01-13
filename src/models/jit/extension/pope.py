@@ -13,7 +13,7 @@ def apply_pope(
     with torch.autocast(device_type="cuda", enabled=False):
         # 1. softplus
         # 2. insert zero imaginary part
-        inputs_cis = F.softplus(inputs).to(
+        inputs_cis = F.softplus(inputs.float()).to(
             torch.complex64
         )  # (batch_size, num_heads, seq_len, dim) complex64
 
@@ -22,8 +22,8 @@ def apply_pope(
         if learned_bias is not None:
             bias_cis = (
                 torch.polar(
-                    abs=torch.ones_like(learned_bias),
-                    angle=learned_bias,
+                    abs=torch.ones_like(learned_bias).float(),
+                    angle=learned_bias.float(),
                 )
                 .to(torch.complex64)
                 .view(1, num_heads, 1, dim)
